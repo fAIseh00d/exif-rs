@@ -122,3 +122,4 @@ mod util;
 mod value;
 mod webp;
 mod writer;
+pub mod make_note;
