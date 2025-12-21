@@ -57,11 +57,17 @@ pub mod sony;
 pub mod canon;
 pub mod fujifilm;
 pub mod olympus;
+pub mod samsung;
+pub mod apple;
 
 /// Dummy TIFF header for MakerNote vendors that don't include their own TIFF header.
 /// Little-endian TIFF header with IFD offset at 8.
 /// Format: [II (little-endian), 42 (TIFF magic), IFD offset (8)]
 const DUMMY_TIFF_HEADER: &[u8] = &[0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00];
+
+/// Big-endian TIFF header with IFD offset at 8.
+/// Format: [MM (big-endian), 42 (TIFF magic), IFD offset (8)]
+const DUMMY_TIFF_HEADER_BE: &[u8] = &[0x4D, 0x4D, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x08];
 
 /// Parse MakerNote data with offset correction.
 ///
@@ -164,6 +170,41 @@ pub fn parse_make_note_with_vendor(
             crafted = {
                 let mut buf = Vec::new();
                 buf.extend(DUMMY_TIFF_HEADER);
+                buf.extend_from_slice(inside);
+                buf
+            };
+            &crafted[..]
+        }
+        MakerNoteVendor::Samsung => {
+            // Samsung: Auto-detect byte order from IFD tag structure
+            // Samsung MakerNote starts directly with IFD (no TIFF header)
+            // Check first few tag numbers to determine correct byte order
+            crafted = {
+                let mut buf = Vec::new();
+                // Use Samsung-specific byte order detection
+                let is_little_endian = samsung::detect_samsung_byte_order(inside);
+                if is_little_endian {
+                    buf.extend(DUMMY_TIFF_HEADER); // Little-endian
+                } else {
+                    buf.extend(DUMMY_TIFF_HEADER_BE); // Big-endian
+                }
+                buf.extend_from_slice(inside);
+                buf
+            };
+            &crafted[..]
+        }
+        MakerNoteVendor::Apple => {
+            // Apple: "Apple iOS\0" (10) + version (2) + "II/MM" (2) = 14 bytes header
+            // Detect byte order from header, then add appropriate TIFF header
+            crafted = {
+                let mut buf = Vec::new();
+                // Detect byte order from Apple header
+                let is_little_endian = apple::detect_apple_byte_order(data);
+                if is_little_endian {
+                    buf.extend(DUMMY_TIFF_HEADER); // Little-endian
+                } else {
+                    buf.extend(DUMMY_TIFF_HEADER_BE); // Big-endian
+                }
                 buf.extend_from_slice(inside);
                 buf
             };
