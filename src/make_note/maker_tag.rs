@@ -55,10 +55,14 @@ impl fmt::Display for MakerNoteVendor {
 }
 
 impl MakerNoteVendor {
-    /// Detect vendor from MakerNote header data.
+    /// Detect vendor from MakerNote header data and optional Make field.
     ///
     /// Based on https://exiv2.org/makernote.html header signatures.
-    pub fn from_header(data: &[u8]) -> Self {
+    ///
+    /// # Arguments
+    /// * `data` - The MakerNote data
+    /// * `make` - Optional Make field from EXIF (e.g., "Canon", "SONY")
+    pub fn from_header(data: &[u8], make: Option<&str>) -> Self {
         // Panasonic: "Panasonic\0\0\0"
         if data.starts_with(b"Panasonic") {
             MakerNoteVendor::Panasonic
@@ -67,11 +71,7 @@ impl MakerNoteVendor {
         else if data.starts_with(b"Nikon\x00") {
             MakerNoteVendor::Nikon
         }
-        // Canon
-        else if data.starts_with(b"Canon") {
-            MakerNoteVendor::Canon
-        }
-        // Sony
+        // Sony: "SONY DSC "
         else if data.starts_with(b"SONY") {
             MakerNoteVendor::Sony
         }
@@ -82,10 +82,19 @@ impl MakerNoteVendor {
         // Fujifilm
         else if data.starts_with(b"FUJIFILM") {
             MakerNoteVendor::Fujifilm
+        }
+        // Canon: No header, detect from Make field
+        else if let Some(make_str) = make {
+            if make_str.starts_with("Canon") {
+                MakerNoteVendor::Canon
+            } else {
+                MakerNoteVendor::Unknown
+            }
         } else {
             MakerNoteVendor::Unknown
         }
     }
+
 
     /// Returns the proprietary header size (bytes to skip before IFD).
     ///
@@ -95,23 +104,26 @@ impl MakerNoteVendor {
             MakerNoteVendor::Panasonic => 12, // "Panasonic\0\0\0"
             MakerNoteVendor::Nikon => 10,     // "Nikon\0" + 2 version bytes + 2 padding
             MakerNoteVendor::Fujifilm => 12,  // "FUJIFILM" + 4 bytes
+            MakerNoteVendor::Sony => 12,      // "SONY DSC \0\0\0"
+            MakerNoteVendor::Canon => 0,
             _ => 0,
         }
     }
 
     pub const fn offset_correction(&self) -> i32 {
         match self {
-            MakerNoteVendor::Panasonic | MakerNoteVendor::Fujifilm => {
-            // Removed header_size bytes, but added DUMMY_TIFF_HEADER bytes
-            // tested with Lumix S1R2
-            self.header_size() as i32 - DUMMY_TIFF_HEADER.len() as i32
-        },
-        MakerNoteVendor::Nikon => {
-            // Only removed header, no TIFF header added (Nikon has its own)
-            // tested with Nikon Zf
-            0
-        },
-        _ => 0,
+            MakerNoteVendor::Panasonic | MakerNoteVendor::Fujifilm | MakerNoteVendor::Sony | MakerNoteVendor::Canon => {
+                // Removed header_size bytes, but added DUMMY_TIFF_HEADER bytes
+                // Canon: header_size=0, so offset_correction = 0 - 8 = -8
+                // tested with Lumix S1R2 (Panasonic), ILCE-7M5 (Sony), EOS R6 Mark III (Canon)
+                self.header_size() as i32 - DUMMY_TIFF_HEADER.len() as i32
+            }
+            MakerNoteVendor::Nikon => {
+                // Only removed header, no TIFF header added (Nikon has its own)
+                // tested with Nikon Zf
+                0
+            }
+            _ => 0,
         }
     }
 

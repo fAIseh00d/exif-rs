@@ -100,6 +100,8 @@ pub fn parse_make_note(data: &[u8], consider_tiff_offset: bool, tiff_offset: u32
 ///
 /// # Arguments
 /// * `data` - The raw MakerNote data (before header removal)
+/// * `tiff_offset` - Offset from TIFF start to MakerNote start
+/// * `make` - Optional Make field from EXIF (e.g., "Canon", "SONY")
 ///
 /// # Returns
 /// A tuple of (Vec<MakerNoteField>, MakerNoteVendor, bool) where:
@@ -111,17 +113,28 @@ pub fn parse_make_note(data: &[u8], consider_tiff_offset: bool, tiff_offset: u32
 /// ```ignore
 /// use exif::make_note::parse_make_note_with_vendor;
 ///
-/// let (fields, vendor, _endian) = parse_make_note_with_vendor(make_note_data)?;
+/// let (fields, vendor, _endian) = parse_make_note_with_vendor(make_note_data, 0, Some("Canon"))?;
 /// for field in fields {
 ///     println!("{}: {:?}", field.tag, field.value);
 /// }
 /// ```
 // fixed - added offset_of_note: u32
-pub fn parse_make_note_with_vendor(data: &[u8], tiff_offset: u32) -> Result<(Vec<maker_tag::MakerNoteField>, maker_tag::MakerNoteVendor, bool), Error> {
-    use maker_tag::{MakerNoteVendor, MakerTag, MakerNoteField};
+pub fn parse_make_note_with_vendor(
+    data: &[u8],
+    tiff_offset: u32,
+    make: Option<&str>,
+) -> Result<
+    (
+        Vec<maker_tag::MakerNoteField>,
+        maker_tag::MakerNoteVendor,
+        bool,
+    ),
+    Error,
+> {
+    use maker_tag::{MakerNoteField, MakerNoteVendor, MakerTag};
 
-    // Step 1: Detect vendor from header
-    let vendor = MakerNoteVendor::from_header(data);
+    // Step 1: Detect vendor from header and Make field
+    let vendor = MakerNoteVendor::from_header(data, make);
     let header_size = vendor.header_size();
 
     // Step 2: Skip proprietary header
@@ -136,9 +149,9 @@ pub fn parse_make_note_with_vendor(data: &[u8], tiff_offset: u32) -> Result<(Vec
         MakerNoteVendor::Nikon => {
             // Nikon Type 3 already has TIFF header after the proprietary header
             inside
-        },
-        MakerNoteVendor::Panasonic | MakerNoteVendor::Fujifilm => {
-            // Need to add TIFF header
+        }
+        MakerNoteVendor::Panasonic | MakerNoteVendor::Fujifilm | MakerNoteVendor::Sony | MakerNoteVendor::Canon => {
+            // Need to add TIFF header (Canon has no header at all, offsets are relative to TIFF start)
             crafted = {
                 let mut buf = Vec::new();
                 buf.extend(DUMMY_TIFF_HEADER);
@@ -146,11 +159,11 @@ pub fn parse_make_note_with_vendor(data: &[u8], tiff_offset: u32) -> Result<(Vec
                 buf
             };
             &crafted[..]
-        },
+        }
         _ => {
             // Unknown vendor - try parsing as-is
             data
-        },
+        }
     };
 
     // Step 4: Parse with offset correction
@@ -159,20 +172,26 @@ pub fn parse_make_note_with_vendor(data: &[u8], tiff_offset: u32) -> Result<(Vec
     let consider_tiff_offset = vendor.consider_tiff_offset();
 
     let mut parser = MakerNoteParser::with_offset_correction(
-        consider_tiff_offset, tiff_offset, offset_correction);
+        consider_tiff_offset,
+        tiff_offset,
+        offset_correction,
+    );
 
     parser.parse(parse_data)?;
     let (entries, le) = (parser.entries, parser.little_endian);
 
     // Step 5: Convert to MakerNoteField with vendor-specific tags
-    let maker_fields = entries.into_iter().map(|entry| {
-        let field = entry.into_field(parse_data, le);
-        MakerNoteField::new(
-            MakerTag::new(vendor, field.tag.1),
-            field.ifd_num,
-            field.value
-        )
-    }).collect();
+    let maker_fields = entries
+        .into_iter()
+        .map(|entry| {
+            let field = entry.into_field(parse_data, le);
+            MakerNoteField::new(
+                MakerTag::new(vendor, field.tag.1),
+                field.ifd_num,
+                field.value,
+            )
+        })
+        .collect();
 
     Ok((maker_fields, vendor, le))
 }
