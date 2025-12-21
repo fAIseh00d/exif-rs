@@ -81,7 +81,25 @@ impl IfdEntry {
         self.field.into_inner()
     }
 
+    // Generic parsing for MakerNote entries without tag-specific handling
+    pub(crate) fn into_field_generic(self, data: &[u8], le: bool) -> Field {
+        self.parse_generic(data, le);
+        self.field.into_inner()
+    }
+
     fn parse(&self, data: &[u8], le: bool) {
+        if !self.field.is_fixed() {
+            let mut field = self.field.get_mut();
+            if le {
+                Self::parse_value::<LittleEndian>(&mut field.value, data);
+            } else {
+                Self::parse_value::<BigEndian>(&mut field.value, data);
+            }
+        }
+    }
+
+    // Generic parsing without tag-specific handling (for MakerNote)
+    fn parse_generic(&self, data: &[u8], le: bool) {
         if !self.field.is_fixed() {
             let mut field = self.field.get_mut();
             if le {

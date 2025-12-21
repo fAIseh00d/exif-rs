@@ -4,36 +4,8 @@
 // - https://exiftool.org/TagNames/Panasonic.html
 // - Leica uses Panasonic-compatible tag structure (Leica5 format)
 //
-use super::maker_tag::{MakerTag, MakerNoteVendor};
-use crate::value::Value;
-
-/// Display Undefined value as null-terminated string
-fn d_undef_as_string(value: &Value) -> String {
-    match value {
-        Value::Undefined(bytes, _) => {
-            let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-            std::str::from_utf8(&bytes[..end])
-                .unwrap_or("<invalid UTF-8>")
-                .to_string()
-        }
-        Value::Ascii(vec) => {
-            // For Ascii, take the first non-empty string
-            vec.iter()
-                .find(|s| !s.is_empty())
-                .and_then(|s| std::str::from_utf8(s).ok())
-                .unwrap_or("")
-                .to_string()
-        }
-        Value::Byte(bytes) => {
-            // For Byte, treat as null-terminated string
-            let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-            std::str::from_utf8(&bytes[..end])
-                .unwrap_or("<invalid UTF-8>")
-                .to_string()
-        }
-        _ => format!("{:?}", value),
-    }
-}
+use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor};
+use crate::make_note::maker_tag::d_undef_as_string;
 
 generate_maker_tags! {
     vendor: Panasonic,

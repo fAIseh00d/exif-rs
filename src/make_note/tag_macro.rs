@@ -24,7 +24,55 @@
 /// ```
 #[macro_export]
 macro_rules! generate_maker_tags {
-    // With custom display function
+    // With custom function prefix
+    (
+        vendor: $vendor:ident,
+        prefix: $prefix:ident,
+        tags: [
+            $(
+                ($name:ident, $num:expr, $desc:expr $(, $dispfn:ident)?)
+            ),+ $(,)?
+        ]
+    ) => {
+        paste::paste! {
+            pub(crate) fn [<$prefix _tag_name>](number: u16) -> Option<&'static str> {
+                match number {
+                    $(
+                        $num => Some(stringify!($name)),
+                    )+
+                    _ => None,
+                }
+            }
+
+            pub(crate) fn [<$prefix _tag_description>](number: u16) -> Option<&'static str> {
+                match number {
+                    $(
+                        $num => Some($desc),
+                    )+
+                    _ => None,
+                }
+            }
+
+            /// Display value for a tag. Returns None to use default display.
+            #[allow(unused_variables)]
+            pub(crate) fn [<$prefix _display_value>](number: u16, value: &crate::value::Value) -> Option<String> {
+                match number {
+                    $(
+                        $num => {
+                            $(
+                                return Some($dispfn(value));
+                            )?
+                            #[allow(unreachable_code)]
+                            None
+                        }
+                    )+
+                    _ => None,
+                }
+            }
+        }
+    };
+
+    // Without custom prefix (backward compatible)
     (
         vendor: $vendor:ident,
         tags: [
@@ -38,6 +86,7 @@ macro_rules! generate_maker_tags {
 
             $(
                 #[allow(non_upper_case_globals)]
+                #[allow(dead_code)]
                 pub const $name: MakerTag = MakerTag::new(MakerNoteVendor::$vendor, $num);
             )+
         }

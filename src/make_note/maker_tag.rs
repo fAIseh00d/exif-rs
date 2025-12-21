@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use crate::make_note::DUMMY_TIFF_HEADER;
+use crate::{Value, make_note::DUMMY_TIFF_HEADER};
 
 /// Camera manufacturer/vendor identifier for MakerNote data.
 ///
@@ -32,6 +32,9 @@ pub enum MakerNoteVendor {
     /// Olympus cameras
     Olympus,
 
+    /// OM System cameras
+    OMSystem,
+
     /// Fujifilm cameras
     /// Uses relative offsets
     Fujifilm,
@@ -39,6 +42,24 @@ pub enum MakerNoteVendor {
     /// Leica cameras
     /// Header: "LEICA\0" + 2-byte version (8 bytes total)
     Leica,
+
+    /// Olympus Equipment subdirectory (0x2010)
+    OlympusEquipment,
+
+    /// Olympus CameraSettings subdirectory (0x2020)
+    OlympusCameraSettings,
+
+    /// Olympus RawDevelopment subdirectory (0x2030)
+    OlympusRawDevelopment,
+
+    /// Olympus ImageProcessing subdirectory (0x2040)
+    OlympusImageProcessing,
+
+    /// Olympus FocusInfo subdirectory (0x2050)
+    OlympusFocusInfo,
+
+    /// Olympus RawInfo subdirectory (0x3000)
+    OlympusRawInfo,
 
     /// Unknown or unsupported vendor
     Unknown,
@@ -52,8 +73,16 @@ impl fmt::Display for MakerNoteVendor {
             MakerNoteVendor::Canon => write!(f, "Canon"),
             MakerNoteVendor::Sony => write!(f, "Sony"),
             MakerNoteVendor::Olympus => write!(f, "Olympus"),
+            MakerNoteVendor::OMSystem => write!(f, "OM System"),
             MakerNoteVendor::Fujifilm => write!(f, "Fujifilm"),
             MakerNoteVendor::Leica => write!(f, "Leica"),
+            // olympus specific
+            MakerNoteVendor::OlympusEquipment => write!(f, "OlympusEquipment"),
+            MakerNoteVendor::OlympusCameraSettings => write!(f, "OlympusCameraSettings"),
+            MakerNoteVendor::OlympusRawDevelopment => write!(f, "OlympusRawDevelopment"),
+            MakerNoteVendor::OlympusImageProcessing => write!(f, "OlympusImageProcessing"),
+            MakerNoteVendor::OlympusFocusInfo => write!(f, "OlympusFocusInfo"),
+            MakerNoteVendor::OlympusRawInfo => write!(f, "OlympusRawInfo"),
             MakerNoteVendor::Unknown => write!(f, "Unknown"),
         }
     }
@@ -83,6 +112,10 @@ impl MakerNoteVendor {
         // Olympus: "OLYMPUS\0" or "OLYMP\0"
         else if data.starts_with(b"OLYMPUS") || data.starts_with(b"OLYMP\x00") {
             MakerNoteVendor::Olympus
+        }
+        // OM System: "OM SYSTEM\0\0\0"
+        else if data.starts_with(b"OM SYSTEM") {
+            MakerNoteVendor::OMSystem
         }
         // Fujifilm
         else if data.starts_with(b"FUJIFILM") {
@@ -115,17 +148,30 @@ impl MakerNoteVendor {
             MakerNoteVendor::Fujifilm => 12,  // "FUJIFILM" + 4 bytes
             MakerNoteVendor::Sony => 12,      // "SONY DSC \0\0\0"
             MakerNoteVendor::Leica => 8,      // "SONY DSC \0\0\0"
+            MakerNoteVendor::Olympus => 12,   // "OLYMPUS\0" + "II/MM" + version (2 bytes)
+            MakerNoteVendor::OMSystem => 16,  // "OM SYSTEM\0\0\0" + "II/MM" + version (2 bytes)
             MakerNoteVendor::Canon => 0,
+            // Subdirectories don't have headers (they're already inside parsed data)
+            MakerNoteVendor::OlympusEquipment
+            | MakerNoteVendor::OlympusCameraSettings
+            | MakerNoteVendor::OlympusRawDevelopment
+            | MakerNoteVendor::OlympusImageProcessing
+            | MakerNoteVendor::OlympusFocusInfo
+            | MakerNoteVendor::OlympusRawInfo => 0,
             _ => 0,
         }
     }
 
     pub const fn offset_correction(&self) -> i32 {
         match self {
-            MakerNoteVendor::Panasonic | MakerNoteVendor::Fujifilm | MakerNoteVendor::Sony | MakerNoteVendor::Canon | MakerNoteVendor::Leica => {
+            MakerNoteVendor::Panasonic | MakerNoteVendor::Fujifilm | MakerNoteVendor::Sony |
+            MakerNoteVendor::Canon | MakerNoteVendor::Leica | MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem => {
                 // Removed header_size bytes, but added DUMMY_TIFF_HEADER bytes
                 // Canon: header_size=0, so offset_correction = 0 - 8 = -8
                 // Leica: header_size=8, so offset_correction = 8 - 8 = 0
+                // Olympus/OM System: Removed header_size bytes (including byte order + version), added DUMMY_TIFF_HEADER
+                // Olympus: header_size=12, so offset_correction = 12 - 8 = 4
+                // OM System: header_size=16, so offset_correction = 16 - 8 = 8
                 // tested with Lumix S1R2 (Panasonic), ILCE-7M5 (Sony), EOS R6 Mark III (Canon), LEICA Q2 (Leica)
                 self.header_size() as i32 - DUMMY_TIFF_HEADER.len() as i32
             }
@@ -134,6 +180,13 @@ impl MakerNoteVendor {
                 // tested with Nikon Zf
                 0
             }
+            // Subdirectories don't have headers (they're already inside parsed data)
+            MakerNoteVendor::OlympusEquipment
+            | MakerNoteVendor::OlympusCameraSettings
+            | MakerNoteVendor::OlympusRawDevelopment
+            | MakerNoteVendor::OlympusImageProcessing
+            | MakerNoteVendor::OlympusFocusInfo
+            | MakerNoteVendor::OlympusRawInfo => 0,
             _ => 0,
         }
     }
@@ -141,9 +194,17 @@ impl MakerNoteVendor {
     pub const fn consider_tiff_offset(&self) -> bool {
         match self {
             // Casio, Fuji, Olympus, Samsung
-            MakerNoteVendor::Fujifilm | MakerNoteVendor::Olympus | MakerNoteVendor::Nikon => false,
+            // Casio, Fuji, Olympus, OM System, Samsung - use MakerNote-relative offsets
+            MakerNoteVendor::Fujifilm | MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem | MakerNoteVendor::Nikon => false,
             // Panasonic, Canon, Sony, Leica use TIFF-relative offsets
             MakerNoteVendor::Panasonic | MakerNoteVendor::Canon | MakerNoteVendor::Sony | MakerNoteVendor::Leica => true,
+            // Olympus subdirectories use MakerNote-relative offsets (inherited from parent)
+            MakerNoteVendor::OlympusEquipment
+            | MakerNoteVendor::OlympusCameraSettings
+            | MakerNoteVendor::OlympusRawDevelopment
+            | MakerNoteVendor::OlympusImageProcessing
+            | MakerNoteVendor::OlympusFocusInfo
+            | MakerNoteVendor::OlympusRawInfo => false,
             // Default
             MakerNoteVendor::Unknown => false,
         }
@@ -201,7 +262,13 @@ impl MakerTag {
             MakerNoteVendor::Sony => super::sony::tag_name(self.number),
             MakerNoteVendor::Canon => super::canon::tag_name(self.number),
             MakerNoteVendor::Fujifilm => super::fujifilm::tag_name(self.number),
-            MakerNoteVendor::Olympus => super::olympus::tag_name(self.number),
+            MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem => super::olympus::tag_name(self.number),
+            MakerNoteVendor::OlympusEquipment => super::olympus::olympus_equipment_tag_name(self.number),
+            MakerNoteVendor::OlympusCameraSettings => super::olympus::olympus_camera_settings_tag_name(self.number),
+            MakerNoteVendor::OlympusRawDevelopment => super::olympus::olympus_raw_development_tag_name(self.number),
+            MakerNoteVendor::OlympusImageProcessing => super::olympus::olympus_image_processing_tag_name(self.number),
+            MakerNoteVendor::OlympusFocusInfo => super::olympus::olympus_focus_info_tag_name(self.number),
+            MakerNoteVendor::OlympusRawInfo => super::olympus::olympus_raw_info_tag_name(self.number),
             _ => None,
         }
     }
@@ -214,7 +281,13 @@ impl MakerTag {
             MakerNoteVendor::Sony => super::sony::tag_description(self.number),
             MakerNoteVendor::Canon => super::canon::tag_description(self.number),
             MakerNoteVendor::Fujifilm => super::fujifilm::tag_description(self.number),
-            MakerNoteVendor::Olympus => super::olympus::tag_description(self.number),
+            MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem => super::olympus::tag_description(self.number),
+            MakerNoteVendor::OlympusEquipment => super::olympus::olympus_equipment_tag_description(self.number),
+            MakerNoteVendor::OlympusCameraSettings => super::olympus::olympus_camera_settings_tag_description(self.number),
+            MakerNoteVendor::OlympusRawDevelopment => super::olympus::olympus_raw_development_tag_description(self.number),
+            MakerNoteVendor::OlympusImageProcessing => super::olympus::olympus_image_processing_tag_description(self.number),
+            MakerNoteVendor::OlympusFocusInfo => super::olympus::olympus_focus_info_tag_description(self.number),
+            MakerNoteVendor::OlympusRawInfo => super::olympus::olympus_raw_info_tag_description(self.number),
             _ => None,
         }
     }
@@ -254,7 +327,13 @@ impl MakerNoteField {
             MakerNoteVendor::Sony => super::sony::display_value(tag.number, &value),
             MakerNoteVendor::Canon => super::canon::display_value(tag.number, &value),
             MakerNoteVendor::Fujifilm => super::fujifilm::display_value(tag.number, &value),
-            MakerNoteVendor::Olympus => super::olympus::display_value(tag.number, &value),
+            MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem => super::olympus::display_value(tag.number, &value),
+            MakerNoteVendor::OlympusEquipment => super::olympus::olympus_equipment_display_value(tag.number, &value),
+            MakerNoteVendor::OlympusCameraSettings => super::olympus::olympus_camera_settings_display_value(tag.number, &value),
+            MakerNoteVendor::OlympusRawDevelopment => super::olympus::olympus_raw_development_display_value(tag.number, &value),
+            MakerNoteVendor::OlympusImageProcessing => super::olympus::olympus_image_processing_display_value(tag.number, &value),
+            MakerNoteVendor::OlympusFocusInfo => super::olympus::olympus_focus_info_display_value(tag.number, &value),
+            MakerNoteVendor::OlympusRawInfo => super::olympus::olympus_raw_info_display_value(tag.number, &value),
             _ => None,
         };
 
@@ -284,3 +363,30 @@ impl fmt::Display for MakerNoteDisplayValue<'_> {
     }
 }
 
+/// Display Undefined value as null-terminated string
+pub(crate) fn d_undef_as_string(value: &Value) -> String {
+    match value {
+        Value::Undefined(bytes, _) => {
+            let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+            std::str::from_utf8(&bytes[..end])
+                .unwrap_or("<invalid UTF-8>")
+                .to_string()
+        }
+        Value::Ascii(vec) => {
+            // For Ascii, take the first non-empty string
+            vec.iter()
+                .find(|s| !s.is_empty())
+                .and_then(|s| std::str::from_utf8(s).ok())
+                .unwrap_or("")
+                .to_string()
+        }
+        Value::Byte(bytes) => {
+            // For Byte, treat as null-terminated string
+            let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+            std::str::from_utf8(&bytes[..end])
+                .unwrap_or("<invalid UTF-8>")
+                .to_string()
+        }
+        _ => format!("{:?}", value),
+    }
+}

@@ -3,7 +3,7 @@
 // Based on https://exiftool.org/TagNames/FujiFilm.html
 //
 
-use super::maker_tag::{MakerTag, MakerNoteVendor};
+use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor};
 
 generate_maker_tags! {
     vendor: Fujifilm,

@@ -26,6 +26,7 @@
 
 use crate::endian::{Endian, BigEndian, LittleEndian};
 use crate::error::Error;
+use crate::make_note::maker_tag::MakerNoteVendor;
 use crate::tag::Context;
 use crate::value::Value;
 use crate::value::get_type_info;
@@ -87,11 +88,18 @@ const DUMMY_TIFF_HEADER: &[u8] = &[0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x0
 /// let (fields, _endian) = parse_make_note(&crafted, 12)?;
 /// ```
 pub fn parse_make_note(data: &[u8], consider_tiff_offset: bool, tiff_offset: u32, offset_correction: i32) -> Result<(Vec<Field>, bool), Error> {
-    let mut parser = MakerNoteParser::with_offset_correction(consider_tiff_offset, tiff_offset, offset_correction);
+    let mut parser = MakerNoteParser::with_offset_correction(
+        MakerNoteVendor::Unknown, consider_tiff_offset, tiff_offset, offset_correction);
 
     parser.parse(data)?;
     let (entries, le) = (parser.entries, parser.little_endian);
-    Ok((entries.into_iter().map(|e| e.into_field(data, le)).collect(), le))
+    Ok((
+        entries
+            .into_iter()
+            .map(|e| e.0.into_field(data, le))
+            .collect(),
+        le,
+    ))
 }
 
 /// Parse MakerNote data with vendor detection and offset correction.
@@ -150,7 +158,8 @@ pub fn parse_make_note_with_vendor(
             // Nikon Type 3 already has TIFF header after the proprietary header
             inside
         }
-        MakerNoteVendor::Panasonic | MakerNoteVendor::Fujifilm | MakerNoteVendor::Sony | MakerNoteVendor::Canon | MakerNoteVendor::Leica => {
+        MakerNoteVendor::Panasonic | MakerNoteVendor::Fujifilm | MakerNoteVendor::Sony | MakerNoteVendor::Canon |
+        MakerNoteVendor::Leica | MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem => {
             // Need to add TIFF header (Canon has no header at all, offsets are relative to TIFF start)
             crafted = {
                 let mut buf = Vec::new();
@@ -172,6 +181,7 @@ pub fn parse_make_note_with_vendor(
     let consider_tiff_offset = vendor.consider_tiff_offset();
 
     let mut parser = MakerNoteParser::with_offset_correction(
+        vendor,
         consider_tiff_offset,
         tiff_offset,
         offset_correction,
@@ -183,10 +193,11 @@ pub fn parse_make_note_with_vendor(
     // Step 5: Convert to MakerNoteField with vendor-specific tags
     let maker_fields = entries
         .into_iter()
-        .map(|entry| {
-            let field = entry.into_field(parse_data, le);
+        .map(|(entry, entry_vendor)| {
+            // Use generic parsing to avoid tag-specific handling (e.g., JPEGInterchangeFormat)
+            let field = entry.into_field_generic(parse_data, le);
             MakerNoteField::new(
-                MakerTag::new(vendor, field.tag.1),
+                MakerTag::new(entry_vendor, field.tag.1),
                 field.ifd_num,
                 field.value,
             )
@@ -198,7 +209,8 @@ pub fn parse_make_note_with_vendor(
 
 #[derive(Debug)]
 pub struct MakerNoteParser {
-    pub entries: Vec<IfdEntry>,
+    pub vendor: MakerNoteVendor,
+    pub entries: Vec<(IfdEntry, MakerNoteVendor)>, // (entry, vendor at time of parsing)
     pub little_endian: bool,
     // `Some<Vec>` to enable the option and `None` to disable it.
     pub continue_on_error: Option<Vec<Error>>,
@@ -219,6 +231,7 @@ pub struct MakerNoteParser {
 impl MakerNoteParser {
     pub fn new() -> Self {
         Self {
+            vendor: MakerNoteVendor::Unknown,
             entries: Vec::new(),
             little_endian: false,
             continue_on_error: None,
@@ -228,8 +241,9 @@ impl MakerNoteParser {
         }
     }
 
-    pub fn with_offset_correction(consider_tiff_offset: bool, tiff_offset: u32, offset_correction: i32) -> Self {
+    pub fn with_offset_correction(vendor: MakerNoteVendor, consider_tiff_offset: bool, tiff_offset: u32, offset_correction: i32) -> Self {
         Self {
+            vendor,
             entries: Vec::new(),
             little_endian: false,
             continue_on_error: None,
@@ -320,15 +334,41 @@ impl MakerNoteParser {
             // No infinite recursion will occur because the context is not
             // recursively defined.
             let tag = Tag(ctx, tag);
-            let child_ctx = match tag {
-                Tag::ExifIFDPointer => Context::Exif,
-                Tag::GPSInfoIFDPointer => Context::Gps,
-                Tag::InteropIFDPointer => Context::Interop,
+            let child_ctx = match (tag, self.vendor) {
+                (Tag::ExifIFDPointer, _) => Context::Exif,
+                (Tag::GPSInfoIFDPointer, _) => Context::Gps,
+                (Tag::InteropIFDPointer, _) => Context::Interop,
+                (_, MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem) => {
+                    if olympus::is_olympus_subdir(tag) && ctx == Context::Tiff {
+                        // Determine subdirectory vendor based on tag number
+                        let subdir_vendor = olympus::get_subdir_vendor(tag, self.vendor);
+
+                        // Save current vendor and switch to subdirectory vendor
+                        let saved_vendor = self.vendor;
+                        self.vendor = subdir_vendor;
+
+                        let result = olympus::parse_olympus_subdir::<E, _>(
+                                data, val, tag, self.offset_correction, ifd_num,
+                                |d, o, i| self.parse_ifd::<E>(d, o, Context::Tiff, i),
+                        );
+
+                        // Restore original vendor
+                        self.vendor = saved_vendor;
+
+                        result.or_else(|e| self.check_error(e))?;
+                        continue;
+                    }
+
+                    self.entries.push((IfdEntry::from_field(Field {
+                        tag: tag,
+                        ifd_num: In(ifd_num),
+                        value: val,
+                    }), self.vendor));
+                    continue;
+                }
                 _ => {
-                    // log::debug!("z[{}]{tag} {} : {:?}", In(ifd_num), tag.1, val);
-                    
-                    self.entries.push(IfdEntry::from_field(Field {
-                        tag: tag, ifd_num: In(ifd_num), value: val }));
+                    self.entries.push((IfdEntry::from_field(Field {
+                        tag: tag, ifd_num: In(ifd_num), value: val }), self.vendor));
                     continue;
                 },
             };
@@ -471,5 +511,104 @@ mod tests {
         let d2 = d1.with_unit(());
         assert_eq!(d1.to_string(), "cm");
         assert_eq!(d2.to_string(), "cm");
+    }
+
+
+    #[test]
+    fn continue_on_error() {
+        macro_rules! define_test {
+            {
+                data: $data:expr,
+                fields: [$($fields:pat),*],
+                errors: [$first_error:pat $(, $rest_errors:pat)*]
+            } => {
+                let data = $data;
+                let mut parser = MakerNoteParser::new();
+                assert_err_pat!(parser.parse(data), $first_error);
+                let mut parser = MakerNoteParser::new();
+                parser.continue_on_error = Some(Vec::new());
+                parser.parse(data).unwrap();
+                assert_eq!(parser.little_endian, false);
+                let mut entries = parser.entries.iter();
+                $(
+                    assert_pat!(entries.next().unwrap()
+                                       .0.ref_field(data, parser.little_endian),
+                                $fields);
+                )*
+                assert_pat!(entries.next(), None);
+                let mut errors =
+                    parser.continue_on_error.as_ref().unwrap().iter();
+                assert_pat!(errors.next().unwrap(), $first_error);
+                $(
+                    assert_pat!(errors.next().unwrap(), $rest_errors);
+                )*
+                assert_pat!(errors.next(), None);
+            }
+        }
+        // 0th IFD is missing.
+        define_test! {
+            data: b"MM\0\x2a\0\0\0\x08",
+            fields: [],
+            errors: [Error::InvalidFormat("Truncated IFD count")]
+        }
+        // 2nd entry is truncated.
+        define_test! {
+            data: b"MM\0\x2a\0\0\0\x08\
+                    \0\x02\x01\x00\0\x03\0\0\0\x01\0\x14\0\0\
+                          \x01\x01\0\x03\0\0\0\x01\0\x15\0",
+            fields: [Field { tag: Tag::ImageWidth, ifd_num: In(0),
+                             value: Value::Short(_) }],
+            errors: [Error::InvalidFormat("Truncated IFD")]
+        }
+        // 1st entry broken.
+        define_test! {
+            data: b"MM\0\x2a\0\0\0\x08\
+                    \0\x02\x01\x00\0\x03\0\0\0\x03\0\0\0\x21\
+                          \x01\x01\0\x03\0\0\0\x01\0\x15\0\0\
+                          \0\0\0\0",
+            fields: [Field { tag: Tag::ImageLength, ifd_num: In(0),
+                             value: Value::Short(_) }],
+            errors: [Error::InvalidFormat("Truncated field value")]
+        }
+        // Exif IFD has non-zero next IFD offset.
+        // Top-level next IFD is also broken.
+        define_test! {
+            data: b"MM\0\x2a\0\0\0\x08\
+                    \0\x02\x87\x69\0\x04\0\0\0\x01\0\0\0\x26\
+                          \xfd\xe8\0\x09\0\0\0\x01\xfe\xdc\xba\x98\
+                          \xff\xff\xff\xff\
+                    \0\x01\x90\x00\0\x07\0\0\0\x04\x00\x02\x03\x02\
+                          \0\0\0\x01",
+            fields: [Field { tag: Tag::ExifVersion, ifd_num: In(0),
+                             value: Value::Undefined(_, _) },
+                     Field { tag: Tag(Context::Tiff, 65000), ifd_num: In(0),
+                             value: Value::SLong(_) }],
+            errors: [Error::InvalidFormat("Unexpected next IFD"),
+                     Error::InvalidFormat("Truncated IFD count")]
+        }
+        // Exif IFD pointer has a bad type.
+        define_test! {
+            data: b"MM\0\x2a\0\0\0\x08\
+                    \0\x02\x87\x69\0\x09\0\0\0\x01\0\0\0\x26\
+                          \xfd\xe8\0\x06\0\0\0\x03\xfe\xdc\xba\x98\
+                          \0\0\0\0\
+                    \0\x01\x90\x00\0\x07\0\0\0\x04\x00\x02\x03\x02\
+                          \0\0\0\x01",
+            fields: [Field { tag: Tag(Context::Tiff, 65000), ifd_num: In(0),
+                             value: Value::SByte(_) }],
+            errors: [Error::InvalidFormat("Invalid pointer")]
+        }
+        // Exif IFD pointer is empty.
+        define_test! {
+            data: b"MM\0\x2a\0\0\0\x08\
+                    \0\x02\x87\x69\0\x04\0\0\0\x00\0\0\0\x26\
+                          \xfd\xe8\0\x08\0\0\0\x02\xfe\xdc\xba\x98\
+                          \0\0\0\0\
+                    \0\x01\x90\x00\0\x07\0\0\0\x04\x00\x02\x03\x02\
+                          \0\0\0\x01",
+            fields: [Field { tag: Tag(Context::Tiff, 65000), ifd_num: In(0),
+                             value: Value::SShort(_) }],
+            errors: [Error::InvalidFormat("Invalid pointer")]
+        }
     }
 }
