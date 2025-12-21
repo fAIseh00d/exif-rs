@@ -1,8 +1,9 @@
 //
-// Panasonic MakerNote Tag definitions
-// Based on https://exiftool.org/TagNames/Panasonic.html
+// Panasonic & Leica MakerNote Tag definitions
+// Based on:
+// - https://exiftool.org/TagNames/Panasonic.html
+// - Leica uses Panasonic-compatible tag structure (Leica5 format)
 //
-
 use super::maker_tag::{MakerTag, MakerNoteVendor};
 use crate::value::Value;
 
@@ -173,5 +174,34 @@ generate_maker_tags! {
     (TextStamp4, 0x8009, "Text Stamp 4"),
     (BabyAge2, 0x8010, "Baby Age 2"),
     (Transform2, 0x8012, "Transform 2"),
+
+    // Leica-specific tags (Leica5 format) - 0x03xx and 0x04xx range
+    // Found in Leica Q2, Q3, Q3 MONO models
+    (Leica_0x0302, 0x0302, "Leica 0x0302"),
+    (Leica_0x0304, 0x0304, "Leica 0x0304"),
+    (SerialNumber, 0x0305, "Serial Number"),
+    (Leica_0x0306, 0x0306, "Leica 0x0306"),
+    (Leica_0x0400, 0x0400, "Leica 0x0400"),
+    (Leica_0x0401, 0x0401, "Leica 0x0401"),
+    (Leica_0x0402, 0x0402, "Leica 0x0402"),
+    (Leica_0x0404, 0x0404, "Leica 0x0404"),
+    (Leica_0x0405, 0x0405, "Leica 0x0405"),
+    (Leica_0x0406, 0x0406, "Leica 0x0406"),
+    (OriginalFileName, 0x0407, "Original File Name", d_undef_as_string),
+    (OriginalDirectory, 0x0408, "Original Directory", d_undef_as_string),
+    (Leica_0x0409, 0x0409, "Leica 0x0409"),
+    (FocusInfo, 0x040a, "Focus Info"),
+    (Leica_0x040b, 0x040b, "Leica 0x040b"),
+    (Leica_0x040c, 0x040c, "Leica 0x040c"),
+    (Leica_0x040e, 0x040e, "Leica 0x040e"),
+    (ShotInfo, 0x0410, "Shot Info"),
+    (Leica_0x0411, 0x0411, "Leica 0x0411"),
+    (FilmMode_Leica, 0x0412, "Film Mode"),
+    (WB_RGBLevels, 0x0413, "WB RGB Levels"),
+    (Leica_0x0414, 0x0414, "Leica 0x0414"),
+    (Leica_0x0415, 0x0415, "Leica 0x0415"),
+    (Leica_0x0416, 0x0416, "Leica 0x0416"),
+    (Leica_0x0417, 0x0417, "Leica 0x0417"),
+    (Leica_0x0418, 0x0418, "Leica 0x0418"),
     ]
 }

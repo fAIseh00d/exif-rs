@@ -36,6 +36,10 @@ pub enum MakerNoteVendor {
     /// Uses relative offsets
     Fujifilm,
 
+    /// Leica cameras
+    /// Header: "LEICA\0" + 2-byte version (8 bytes total)
+    Leica,
+
     /// Unknown or unsupported vendor
     Unknown,
 }
@@ -49,6 +53,7 @@ impl fmt::Display for MakerNoteVendor {
             MakerNoteVendor::Sony => write!(f, "Sony"),
             MakerNoteVendor::Olympus => write!(f, "Olympus"),
             MakerNoteVendor::Fujifilm => write!(f, "Fujifilm"),
+            MakerNoteVendor::Leica => write!(f, "Leica"),
             MakerNoteVendor::Unknown => write!(f, "Unknown"),
         }
     }
@@ -83,6 +88,10 @@ impl MakerNoteVendor {
         else if data.starts_with(b"FUJIFILM") {
             MakerNoteVendor::Fujifilm
         }
+        // Leica: "LEICA\0"
+        else if data.starts_with(b"LEICA\x00") {
+            MakerNoteVendor::Leica
+        }
         // Canon: No header, detect from Make field
         else if let Some(make_str) = make {
             if make_str.starts_with("Canon") {
@@ -105,6 +114,7 @@ impl MakerNoteVendor {
             MakerNoteVendor::Nikon => 10,     // "Nikon\0" + 2 version bytes + 2 padding
             MakerNoteVendor::Fujifilm => 12,  // "FUJIFILM" + 4 bytes
             MakerNoteVendor::Sony => 12,      // "SONY DSC \0\0\0"
+            MakerNoteVendor::Leica => 8,      // "SONY DSC \0\0\0"
             MakerNoteVendor::Canon => 0,
             _ => 0,
         }
@@ -112,10 +122,11 @@ impl MakerNoteVendor {
 
     pub const fn offset_correction(&self) -> i32 {
         match self {
-            MakerNoteVendor::Panasonic | MakerNoteVendor::Fujifilm | MakerNoteVendor::Sony | MakerNoteVendor::Canon => {
+            MakerNoteVendor::Panasonic | MakerNoteVendor::Fujifilm | MakerNoteVendor::Sony | MakerNoteVendor::Canon | MakerNoteVendor::Leica => {
                 // Removed header_size bytes, but added DUMMY_TIFF_HEADER bytes
                 // Canon: header_size=0, so offset_correction = 0 - 8 = -8
-                // tested with Lumix S1R2 (Panasonic), ILCE-7M5 (Sony), EOS R6 Mark III (Canon)
+                // Leica: header_size=8, so offset_correction = 8 - 8 = 0
+                // tested with Lumix S1R2 (Panasonic), ILCE-7M5 (Sony), EOS R6 Mark III (Canon), LEICA Q2 (Leica)
                 self.header_size() as i32 - DUMMY_TIFF_HEADER.len() as i32
             }
             MakerNoteVendor::Nikon => {
@@ -130,17 +141,11 @@ impl MakerNoteVendor {
     pub const fn consider_tiff_offset(&self) -> bool {
         match self {
             // Casio, Fuji, Olympus, Samsung
-            MakerNoteVendor::Fujifilm | MakerNoteVendor::Olympus | MakerNoteVendor::Nikon => {
-                false
-            },
-            // Nikon
-            MakerNoteVendor::Panasonic | MakerNoteVendor::Canon | MakerNoteVendor::Sony => {
-                true
-            },
+            MakerNoteVendor::Fujifilm | MakerNoteVendor::Olympus | MakerNoteVendor::Nikon => false,
+            // Panasonic, Canon, Sony, Leica use TIFF-relative offsets
+            MakerNoteVendor::Panasonic | MakerNoteVendor::Canon | MakerNoteVendor::Sony | MakerNoteVendor::Leica => true,
             // Default
-            MakerNoteVendor::Unknown => {
-                false
-            }
+            MakerNoteVendor::Unknown => false,
         }
     }
 }
@@ -191,7 +196,7 @@ impl MakerTag {
     /// Returns the tag name if known, otherwise None.
     pub fn name(&self) -> Option<&'static str> {
         match self.vendor {
-            MakerNoteVendor::Panasonic => super::panasonic::tag_name(self.number),
+            MakerNoteVendor::Panasonic | MakerNoteVendor::Leica => super::panasonic::tag_name(self.number),
             MakerNoteVendor::Nikon => super::nikon::tag_name(self.number),
             MakerNoteVendor::Sony => super::sony::tag_name(self.number),
             MakerNoteVendor::Canon => super::canon::tag_name(self.number),
@@ -204,7 +209,7 @@ impl MakerTag {
     /// Returns the tag description if known, otherwise None.
     pub fn description(&self) -> Option<&'static str> {
         match self.vendor {
-            MakerNoteVendor::Panasonic => super::panasonic::tag_description(self.number),
+            MakerNoteVendor::Panasonic | MakerNoteVendor::Leica => super::panasonic::tag_description(self.number),
             MakerNoteVendor::Nikon => super::nikon::tag_description(self.number),
             MakerNoteVendor::Sony => super::sony::tag_description(self.number),
             MakerNoteVendor::Canon => super::canon::tag_description(self.number),
@@ -244,7 +249,7 @@ impl MakerNoteField {
     pub fn new(tag: MakerTag, ifd_num: super::In, value: crate::value::Value) -> Self {
         // Try to get vendor-specific custom display
         let custom_display = match tag.vendor {
-            MakerNoteVendor::Panasonic => super::panasonic::display_value(tag.number, &value),
+            MakerNoteVendor::Panasonic | MakerNoteVendor::Leica => super::panasonic::display_value(tag.number, &value),
             MakerNoteVendor::Nikon => super::nikon::display_value(tag.number, &value),
             MakerNoteVendor::Sony => super::sony::display_value(tag.number, &value),
             MakerNoteVendor::Canon => super::canon::display_value(tag.number, &value),

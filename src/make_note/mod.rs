@@ -150,7 +150,7 @@ pub fn parse_make_note_with_vendor(
             // Nikon Type 3 already has TIFF header after the proprietary header
             inside
         }
-        MakerNoteVendor::Panasonic | MakerNoteVendor::Fujifilm | MakerNoteVendor::Sony | MakerNoteVendor::Canon => {
+        MakerNoteVendor::Panasonic | MakerNoteVendor::Fujifilm | MakerNoteVendor::Sony | MakerNoteVendor::Canon | MakerNoteVendor::Leica => {
             // Need to add TIFF header (Canon has no header at all, offsets are relative to TIFF start)
             crafted = {
                 let mut buf = Vec::new();
