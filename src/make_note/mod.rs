@@ -59,6 +59,7 @@ pub mod fujifilm;
 pub mod olympus;
 pub mod samsung;
 pub mod apple;
+pub mod sigma;
 
 /// Dummy TIFF header for MakerNote vendors that don't include their own TIFF header.
 /// Little-endian TIFF header with IFD offset at 8.
@@ -165,7 +166,7 @@ pub fn parse_make_note_with_vendor(
             inside
         }
         MakerNoteVendor::Panasonic | MakerNoteVendor::Fujifilm | MakerNoteVendor::Sony | MakerNoteVendor::Canon |
-        MakerNoteVendor::Leica | MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem => {
+        MakerNoteVendor::Leica | MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem | MakerNoteVendor::Sigma => {
             // Need to add TIFF header (Canon has no header at all, offsets are relative to TIFF start)
             crafted = {
                 let mut buf = Vec::new();

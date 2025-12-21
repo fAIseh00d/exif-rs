@@ -51,6 +51,10 @@ pub enum MakerNoteVendor {
     /// No proprietary header, starts directly with IFD
     Apple,
 
+    /// Sigma cameras
+    /// Header: "SIGMA\0\0\0" or "FOVEON\0\0" (8 bytes)
+    Sigma,
+
     /// Olympus Equipment subdirectory (0x2010)
     OlympusEquipment,
 
@@ -86,6 +90,7 @@ impl fmt::Display for MakerNoteVendor {
             MakerNoteVendor::Leica => write!(f, "Leica"),
             MakerNoteVendor::Samsung => write!(f, "Samsung"),
             MakerNoteVendor::Apple => write!(f, "Apple"),
+            MakerNoteVendor::Sigma => write!(f, "Sigma"),
             // olympus specific
             MakerNoteVendor::OlympusEquipment => write!(f, "OlympusEquipment"),
             MakerNoteVendor::OlympusCameraSettings => write!(f, "OlympusCameraSettings"),
@@ -139,6 +144,10 @@ impl MakerNoteVendor {
         else if data.starts_with(b"Apple iOS") {
             MakerNoteVendor::Apple
         }
+        // Sigma: "SIGMA\0\0\0" or "FOVEON\0\0"
+        else if data.starts_with(b"SIGMA\x00") || data.starts_with(b"FOVEON\x00") {
+            MakerNoteVendor::Sigma
+        }
         // Canon/Samsung: No header, detect from Make field
         else if let Some(make_str) = make {
             if make_str.starts_with("Canon") {
@@ -169,6 +178,7 @@ impl MakerNoteVendor {
             MakerNoteVendor::Leica => 8,      // "LEICA\0" + version (2 bytes)
             MakerNoteVendor::Samsung => 0,    // No header, starts directly with IFD
             MakerNoteVendor::Apple => 14,     // "Apple iOS\0" (10) + version (2) + "II/MM" (2) = 14 bytes
+            MakerNoteVendor::Sigma => 10,     // "SIGMA\0\0\0" or "FOVEON\0\0" (8) + version (2) = 10 bytes
             // Subdirectories don't have headers (they're already inside parsed data)
             MakerNoteVendor::OlympusEquipment
             | MakerNoteVendor::OlympusCameraSettings
@@ -184,7 +194,7 @@ impl MakerNoteVendor {
         match self {
             MakerNoteVendor::Panasonic | MakerNoteVendor::Canon | MakerNoteVendor::Sony | MakerNoteVendor::Olympus |
             MakerNoteVendor::OMSystem | MakerNoteVendor::Fujifilm | MakerNoteVendor::Leica | MakerNoteVendor::Samsung |
-            &MakerNoteVendor::Apple => {
+            &MakerNoteVendor::Apple | MakerNoteVendor::Sigma => {
                 // Removed header_size bytes, but added DUMMY_TIFF_HEADER bytes
                 // Panasonic: header_size=12, so offset_correction = 12 - 8 = 4
                 // Canon: header_size=0, so offset_correction = 0 - 8 = -8
@@ -195,6 +205,7 @@ impl MakerNoteVendor {
                 // Leica: header_size=8, so offset_correction = 8 - 8 = 0
                 // Samsung: header_size=0, so offset_correction = 0 - 8 = -8
                 // Apple: header_size=14, so offset_correction = 14 - 8 = 6
+                // Sigma: header_size=10, so offset_correction = 10 - 8 = 2
                 // tested with Lumix S1R2 (Panasonic), ILCE-7M5 (Sony), EOS R6 Mark III (Canon), LEICA Q2 (Leica)
                 self.header_size() as i32 - DUMMY_TIFF_HEADER.len() as i32
             }
@@ -217,7 +228,8 @@ impl MakerNoteVendor {
     pub const fn consider_tiff_offset(&self) -> bool {
         match self {
             // Panasonic, Canon, Sony, Leica use TIFF-relative offsets
-            MakerNoteVendor::Panasonic | MakerNoteVendor::Canon | MakerNoteVendor::Sony | MakerNoteVendor::Leica => true,
+            MakerNoteVendor::Panasonic | MakerNoteVendor::Canon | MakerNoteVendor::Sony |
+            MakerNoteVendor::Leica | MakerNoteVendor::Sigma => true,
             // Nikon, Olympus, OM System, Fujifilm, Samsung, Apple - use MakerNote-relative offsets
             MakerNoteVendor::Nikon | MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem |
             MakerNoteVendor::Fujifilm | MakerNoteVendor::Samsung | MakerNoteVendor::Apple => false,
@@ -289,6 +301,7 @@ impl MakerTag {
             MakerNoteVendor::Leica => super::panasonic::tag_name(self.number),
             MakerNoteVendor::Samsung => super::samsung::tag_name(self.number),
             MakerNoteVendor::Apple => super::apple::tag_name(self.number),
+            MakerNoteVendor::Sigma => super::sigma::tag_name(self.number),
             MakerNoteVendor::OlympusEquipment => super::olympus::olympus_equipment_tag_name(self.number),
             MakerNoteVendor::OlympusCameraSettings => super::olympus::olympus_camera_settings_tag_name(self.number),
             MakerNoteVendor::OlympusRawDevelopment => super::olympus::olympus_raw_development_tag_name(self.number),
@@ -311,6 +324,7 @@ impl MakerTag {
             MakerNoteVendor::Leica => super::panasonic::tag_description(self.number),
             MakerNoteVendor::Samsung => super::samsung::tag_description(self.number),
             MakerNoteVendor::Apple => super::apple::tag_description(self.number),
+            MakerNoteVendor::Sigma => super::sigma::tag_description(self.number),
             MakerNoteVendor::OlympusEquipment => super::olympus::olympus_equipment_tag_description(self.number),
             MakerNoteVendor::OlympusCameraSettings => super::olympus::olympus_camera_settings_tag_description(self.number),
             MakerNoteVendor::OlympusRawDevelopment => super::olympus::olympus_raw_development_tag_description(self.number),
@@ -360,6 +374,7 @@ impl MakerNoteField {
             MakerNoteVendor::Leica => super::panasonic::display_value(tag.number, &value),
             MakerNoteVendor::Samsung => super::samsung::display_value(tag.number, &value),
             MakerNoteVendor::Apple => super::apple::display_value(tag.number, &value),
+            MakerNoteVendor::Sigma => super::sigma::display_value(tag.number, &value),
             MakerNoteVendor::OlympusEquipment => super::olympus::olympus_equipment_display_value(tag.number, &value),
             MakerNoteVendor::OlympusCameraSettings => super::olympus::olympus_camera_settings_display_value(tag.number, &value),
             MakerNoteVendor::OlympusRawDevelopment => super::olympus::olympus_raw_development_display_value(tag.number, &value),
