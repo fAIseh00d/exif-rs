@@ -98,6 +98,9 @@ pub use tiff::{DateTime, Field, In};
 pub use tiff::parse_exif;
 pub use value::Value;
 pub use value::{Rational, SRational};
+pub use make_note::maker_tag::MakerNoteVendor;
+pub use make_note::{apple, canon, fujifilm, nikon, olympus, panasonic};
+pub use make_note::{samsung, sigma, sony};
 
 /// The interfaces in this module are experimental and unstable.
 pub mod experimental {

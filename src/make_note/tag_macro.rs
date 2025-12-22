@@ -30,7 +30,7 @@ macro_rules! generate_maker_tags {
         prefix: $prefix:ident,
         tags: [
             $(
-                ($name:ident, $num:expr, $desc:expr $(, $dispfn:ident)?)
+                ($name:ident, $num:expr, $desc:expr $(, $dispfn:path)?)
             ),+ $(,)?
         ]
     ) => {
@@ -77,7 +77,7 @@ macro_rules! generate_maker_tags {
         vendor: $vendor:ident,
         tags: [
             $(
-                ($name:ident, $num:expr, $desc:expr $(, $dispfn:ident)?)
+                ($name:ident, $num:expr, $desc:expr $(, $dispfn:path)?)
             ),+ $(,)?
         ]
     ) => {

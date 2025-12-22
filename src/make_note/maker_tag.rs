@@ -453,3 +453,23 @@ pub(crate) fn d_undef_as_string(value: &Value) -> String {
         _ => format!("{:?}", value),
     }
 }
+
+/// Extract null-terminated string from byte array
+#[inline]
+pub(crate) fn extract_string(bytes: &[u8]) -> String {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    std::str::from_utf8(&bytes[..end])
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Extract optional null-terminated string (returns None if empty)
+#[inline]
+pub(crate) fn extract_optional_string(bytes: &[u8]) -> Option<String> {
+    let s = extract_string(bytes);
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}

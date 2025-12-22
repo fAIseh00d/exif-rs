@@ -4,6 +4,182 @@
 //
 
 use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor};
+use crate::make_note::maker_tag::{extract_string, extract_optional_string};
+
+use crate::Value;
+
+/// Nikon Picture Control Data parsed structure
+/// Based on https://exiftool.org/TagNames/Nikon.html#PictureControl
+#[derive(Debug, Clone, PartialEq)]
+pub struct NikonPictureControl {
+    pub version: String,
+    pub name: String,
+    pub base: Option<String>,
+    pub quick_adjust: i8,
+    pub sharpness: i8,
+    pub contrast: i8,
+    pub brightness: i8,
+    pub saturation: i8,
+    pub hue: i8,
+    pub filter_effect: u8,
+    pub toning_effect: u8,
+    pub toning_saturation: u8,
+}
+
+impl std::fmt::Display for NikonPictureControl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} [QuickAdjust:{:+}, Sharpness:{:+}, Contrast:{:+}, Brightness:{:+}, \
+        Saturation:{:+}, Hue:{:+}, FilterEffect:{}, ToningEffect:{}, ToningSaturation:{}]",
+            self.name,
+            self.quick_adjust,
+            self.sharpness,
+            self.contrast,
+            self.brightness,
+            self.saturation,
+            self.hue,
+            self.filter_effect,
+            self.toning_effect,
+            self.toning_saturation,
+        )?;
+
+        Ok(())
+    }
+}
+
+impl NikonPictureControl {
+    /// Parse Nikon Picture Control Data from raw bytes using zero-copy transmute
+    /// Based on https://exiftool.org/TagNames/Nikon.html#PictureControl
+    fn raw_parse(data: &[u8]) -> Option<NikonPictureControl> {
+        /// Raw binary layout for Picture Control Data (Version 01xx/02xx)
+        /// Based on https://exiftool.org/TagNames/Nikon.html#PictureControl
+        #[repr(C)]
+        struct PictureControlDataV1V2 {
+            version: [u8; 4],
+            name: [u8; 20],
+            base: [u8; 20],
+            _padding0: [u8; 4],
+            quick_adjust: i8,
+            _padding1: u8,
+            sharpness: i8,
+            _padding2: u8,
+            contrast: i8,
+            _padding3: u8,
+            brightness: i8,
+            _padding4: u8,
+            saturation: i8,
+            _padding5: u8,
+            hue: i8,
+            filter_effect: u8,
+            toning_effect: u8,
+            toning_saturation: u8,
+        }
+
+        /// Raw binary layout for Picture Control Data (Version 03xx)
+        /// Based on https://exiftool.org/TagNames/Nikon.html#PictureControl
+        #[repr(C)]
+        struct PictureControlDataV3 {
+            version: [u8; 4],
+            _padding_v3: [u8; 4],
+            name: [u8; 20],
+            base: [u8; 20],
+            _padding0: [u8; 4],
+            quick_adjust: i8,
+            _padding1: u8,
+            sharpness: i8,
+            _padding2: u8,
+            contrast: i8,
+            _padding3: u8,
+            brightness: i8,
+            _padding4: u8,
+            saturation: i8,
+            _padding5: u8,
+            hue: i8,
+            filter_effect: u8,
+            toning_effect: u8,
+            toning_saturation: u8,
+        }
+
+        if data.len() < 4 {
+            return None;
+        }
+
+        // Determine version and use appropriate struct layout
+        let is_v3 = data.get(1).copied() == Some(b'3');
+
+        if is_v3 {
+            // Version 03xx
+            if data.len() < core::mem::size_of::<PictureControlDataV3>() {
+                return None;
+            }
+            let raw: &PictureControlDataV3 = unsafe { core::mem::transmute(data.as_ptr()) };
+
+            let version = extract_string(&raw.version);
+            let name = extract_string(&raw.name);
+            let base = extract_optional_string(&raw.base);
+
+            Some(NikonPictureControl {
+                version,
+                name,
+                base,
+                quick_adjust: raw.quick_adjust,
+                sharpness: raw.sharpness,
+                contrast: raw.contrast,
+                brightness: raw.brightness,
+                saturation: raw.saturation,
+                hue: raw.hue,
+                filter_effect: raw.filter_effect,
+                toning_effect: raw.toning_effect,
+                toning_saturation: raw.toning_saturation,
+            })
+        } else {
+            // Version 01xx/02xx
+            if data.len() < core::mem::size_of::<PictureControlDataV1V2>() {
+                return None;
+            }
+            let raw: &PictureControlDataV1V2 = unsafe { core::mem::transmute(data.as_ptr()) };
+
+            let version = extract_string(&raw.version);
+            let name = extract_string(&raw.name);
+            let base = extract_optional_string(&raw.base);
+
+            Some(NikonPictureControl {
+                version,
+                name,
+                base,
+                quick_adjust: raw.quick_adjust,
+                sharpness: raw.sharpness,
+                contrast: raw.contrast,
+                brightness: raw.brightness,
+                saturation: raw.saturation,
+                hue: raw.hue,
+                filter_effect: raw.filter_effect,
+                toning_effect: raw.toning_effect,
+                toning_saturation: raw.toning_saturation,
+            })
+        }
+    }
+
+    /// Display function for Picture Control Data tags
+    fn from_value_to_string(value: &Value) -> String {
+        if let Value::Undefined(data, _) = value {
+            if let Some(parsed) = Self::raw_parse(data) {
+                return parsed.to_string();
+            }
+        }
+        String::from("<invalid>")
+    }
+
+    /// Extract optional struct type (returns None if empty)
+    pub fn from_value(value: &Value) -> Option<Self> {
+        match value {
+            Value::Undefined(data, _) => Self::raw_parse(data),
+            _ => None,
+        }
+    }
+}
+
 
 generate_maker_tags! {
     vendor: Nikon,
@@ -41,7 +217,7 @@ generate_maker_tags! {
     (ImageAuthentication, 0x0020, "Image Authentication"),
     (FaceDetect, 0x0021, "Face Detect"),
     (ActiveDLighting, 0x0022, "Active D-Lighting"),
-    (PictureControlData, 0x0023, "Picture Control Data"),
+    (PictureControlData, 0x0023, "Picture Control Data", NikonPictureControl::from_value_to_string),
     (WorldTime, 0x0024, "World Time"),
     (ISOInfo, 0x0025, "ISO Info"),
     (VignetteControl, 0x002a, "Vignette Control"),
@@ -106,7 +282,7 @@ generate_maker_tags! {
     (FileInfo, 0x00b8, "File Info"),
     (AFTune, 0x00b9, "AF Tune"),
     (RetouchInfo, 0x00bb, "Retouch Info"),
-    (PictureControlData2, 0x00bd, "Picture Control Data 2"),
+    (PictureControlData2, 0x00bd, "Picture Control Data 2", NikonPictureControl::from_value_to_string),
     (SilentPhotography, 0x00bf, "Silent Photography"),
     (BarometerInfo, 0x00c3, "Barometer Info"),
     (PrintIM, 0x0e00, "Print IM"),
