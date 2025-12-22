@@ -507,10 +507,10 @@ pub(crate) fn get_subdir_vendor(tag: crate::tag::Tag, fallback: MakerNoteVendor)
 /// Parse Olympus subdirectory IFD
 ///
 /// Olympus subdirectories use IFD type (13), which contains a LONG offset to a nested IFD.
-/// The offset is relative to the MakerNote start, but our buffer has DUMMY_TIFF_HEADER prepended.
+/// The offset is relative to the MakerNote start.
 ///
 /// # Arguments
-/// * `data` - The complete parse buffer (with DUMMY_TIFF_HEADER prepended)
+/// * `data` - The complete parse buffer (after proprietary header removal)
 /// * `val` - The Value::Unknown containing the offset position
 /// * `tag` - The tag that points to this subdirectory
 /// * `offset_correction` - Bytes removed from original MakerNote (for offset adjustment)
@@ -554,10 +554,10 @@ where
         }
 
         // The raw_offset from the MakerNote is already MakerNote-relative
-        // But our data buffer has DUMMY_TIFF_HEADER prepended, so we need to adjust
+        // We need to adjust for the proprietary header we removed
         // Original MakerNote layout: [Olympus header 12 bytes][IFD data...]
-        // Our parse_data layout: [DUMMY_TIFF_HEADER 8 bytes][IFD data...]
-        // So offset X in original MakerNote -> (X - 12 + 8) in parse_data
+        // Our parse_data layout: [IFD data...] (header removed)
+        // So offset X in original MakerNote -> (X - 12) in parse_data
         let offset = (raw_offset as i32 - offset_correction) as usize;
         // log::info!("Olympus subdirectory adjusted offset: {}", offset);
 

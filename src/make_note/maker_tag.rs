@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use crate::{Value, make_note::DUMMY_TIFF_HEADER};
+use crate::Value;
 
 /// Camera manufacturer/vendor identifier for MakerNote data.
 ///
@@ -191,37 +191,28 @@ impl MakerNoteVendor {
     }
 
     pub const fn offset_correction(&self) -> i32 {
-        match self {
-            MakerNoteVendor::Panasonic | MakerNoteVendor::Canon | MakerNoteVendor::Sony | MakerNoteVendor::Olympus |
-            MakerNoteVendor::OMSystem | MakerNoteVendor::Fujifilm | MakerNoteVendor::Leica | MakerNoteVendor::Samsung |
-            &MakerNoteVendor::Apple | MakerNoteVendor::Sigma => {
-                // Removed header_size bytes, but added DUMMY_TIFF_HEADER bytes
-                // Panasonic: header_size=12, so offset_correction = 12 - 8 = 4
-                // Canon: header_size=0, so offset_correction = 0 - 8 = -8
-                // Sony: header_size=12, so offset_correction = 12 - 8 = 4
-                // Olympus: header_size=12, so offset_correction = 12 - 8 = 4
-                // OM System: header_size=16, so offset_correction = 16 - 8 = 8
-                // Fujifilm: header_size=12, so offset_correction = 12 - 8 = 4
-                // Leica: header_size=8, so offset_correction = 8 - 8 = 0
-                // Samsung: header_size=0, so offset_correction = 0 - 8 = -8
-                // Apple: header_size=14, so offset_correction = 14 - 8 = 6
-                // Sigma: header_size=10, so offset_correction = 10 - 8 = 2
-                // tested with Lumix S1R2 (Panasonic), ILCE-7M5 (Sony), EOS R6 Mark III (Canon), LEICA Q2 (Leica)
-                self.header_size() as i32 - DUMMY_TIFF_HEADER.len() as i32
-            }
-            MakerNoteVendor::Nikon => {
-                // Only removed header, no TIFF header added (Nikon has its own)
-                // tested with Nikon Zf
-                0
-            }
-            // Subdirectories don't have headers (they're already inside parsed data)
-            MakerNoteVendor::OlympusEquipment
-            | MakerNoteVendor::OlympusCameraSettings
-            | MakerNoteVendor::OlympusRawDevelopment
-            | MakerNoteVendor::OlympusImageProcessing
-            | MakerNoteVendor::OlympusFocusInfo
-            | MakerNoteVendor::OlympusRawInfo => 0,
-            _ => 0,
+        if self.has_tiff_header() {
+            // Vendor has TIFF header - only removed proprietary header
+            // Nikon: removed 10 bytes (proprietary header), TIFF header remains
+            // Offsets in Nikon MakerNote are relative to TIFF header start (after proprietary header)
+            // So no correction needed - offsets already point to the right location
+            // tested with Nikon Zf
+            0
+        } else {
+            // Removed header_size bytes (proprietary header)
+            // No TIFF header added anymore - offsets point directly to data after removed header
+            // Panasonic: header_size=12, so offset_correction = 12
+            // Canon: header_size=0, so offset_correction = 0
+            // Sony: header_size=12, so offset_correction = 12
+            // Olympus: header_size=12, so offset_correction = 12
+            // OM System: header_size=16, so offset_correction = 16
+            // Fujifilm: header_size=12, so offset_correction = 12
+            // Leica: header_size=8, so offset_correction = 8
+            // Samsung: header_size=0, so offset_correction = 0
+            // Apple: header_size=14, so offset_correction = 14
+            // Sigma: header_size=10, so offset_correction = 10
+            // tested with Lumix S1R2 (Panasonic), ILCE-7M5 (Sony), EOS R6 Mark III (Canon), LEICA Q2 (Leica)
+            self.header_size() as i32
         }
     }
 
@@ -242,6 +233,31 @@ impl MakerNoteVendor {
             | MakerNoteVendor::OlympusRawInfo => false,
             // Default
             MakerNoteVendor::Unknown => false,
+        }
+    }
+
+    /// Returns whether this vendor already has a TIFF header after the proprietary header.
+    ///
+    /// If true, the data after proprietary header already contains a valid TIFF header,
+    /// so we should not add a dummy TIFF header.
+    pub const fn has_tiff_header(&self) -> bool {
+        match self {
+            // Nikon Type 3 already has TIFF header after "Nikon\0" + version
+            MakerNoteVendor::Nikon => true,
+            // All other vendors either have no header or need a TIFF header added
+            MakerNoteVendor::Panasonic | MakerNoteVendor::Canon | MakerNoteVendor::Sony |
+            MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem | MakerNoteVendor::Fujifilm |
+            MakerNoteVendor::Leica | MakerNoteVendor::Samsung | MakerNoteVendor::Apple |
+            MakerNoteVendor::Sigma => false,
+            // Subdirectories don't need TIFF headers (already inside parsed data)
+            MakerNoteVendor::OlympusEquipment
+            | MakerNoteVendor::OlympusCameraSettings
+            | MakerNoteVendor::OlympusRawDevelopment
+            | MakerNoteVendor::OlympusImageProcessing
+            | MakerNoteVendor::OlympusFocusInfo
+            | MakerNoteVendor::OlympusRawInfo => false,
+            // Unknown vendors - assume TIFF header exists (for generic parsing and tests)
+            MakerNoteVendor::Unknown => true,
         }
     }
 }
