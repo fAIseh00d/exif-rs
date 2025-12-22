@@ -28,6 +28,7 @@ use std::collections::HashMap;
 
 use crate::tag::Tag;
 use crate::tiff::{Field, IfdEntry, In, ProvideUnit};
+use crate::make_note::maker_tag::{MakerNoteField, MakerNoteVendor, MakerTag};
 
 /// A struct that holds the parsed Exif attributes.
 ///
@@ -59,6 +60,11 @@ pub struct Exif {
     entry_map: HashMap<(In, Tag), usize>,
     // True if the TIFF data is little endian.
     little_endian: bool,
+    // MakerNote fields parsed by vendor-specific parser.
+    // HashMap for quick access by (vendor, tag_number).
+    maker_note_fields: HashMap<MakerTag, MakerNoteField>,
+    // MakerNote vendor detected from the data, or error if not found.
+    maker_note_vendor: Result<MakerNoteVendor, crate::Error>,
 }
 
 impl Exif {
@@ -67,11 +73,62 @@ impl Exif {
                       entries: Vec<IfdEntry>, little_endian: bool) -> Self {
         let entry_map = entries.iter().enumerate()
             .map(|(i, e)| (e.ifd_num_tag(), i)).collect();
+
+        // Try to parse MakerNote if present
+        let (maker_note_fields, maker_note_vendor) = Self::parse_maker_note_internal(&buf, &entries, little_endian);
+
         Self {
             buf: buf,
             entries: entries,
             entry_map: entry_map,
             little_endian: little_endian,
+            maker_note_fields,
+            maker_note_vendor,
+        }
+    }
+
+    /// Internal helper to parse MakerNote data
+    fn parse_maker_note_internal(
+        buf: &[u8],
+        entries: &[IfdEntry],
+        little_endian: bool,
+    ) -> (HashMap<MakerTag, MakerNoteField>, Result<MakerNoteVendor, crate::Error>) {
+        // Find MakerNote field
+        let maker_note_entry = entries.iter()
+            .find(|e| e.ifd_num_tag().1 == Tag::MakerNote);
+
+        let Some(maker_note_entry) = maker_note_entry else {
+            return (HashMap::new(), Err(crate::Error::MakerNoteNotFound));
+        };
+
+        // Get MakerNote field value
+        let field = maker_note_entry.ref_field(buf, little_endian);
+        let crate::value::Value::Undefined(ref data, offset) = field.value else {
+            return (HashMap::new(), Err(crate::Error::MakerNoteNotFound));
+        };
+
+        // Get Make field for vendor detection
+        let make = entries.iter()
+            .find(|e| e.ifd_num_tag().1 == Tag::Make)
+            .and_then(|e| {
+                let field = e.ref_field(buf, little_endian);
+                if let crate::value::Value::Ascii(ref vec) = field.value {
+                    vec.first()
+                        .and_then(|s| std::str::from_utf8(s).ok())
+                } else {
+                    None
+                }
+            });
+
+        // Parse MakerNote with vendor detection
+        match crate::make_note::parse_make_note_with_vendor(data, offset, make) {
+            Ok((fields, vendor, _le)) => {
+                let map = fields.into_iter()
+                    .map(|f| (f.tag, f))
+                    .collect();
+                (map, Ok(vendor))
+            }
+            Err(e) => (HashMap::new(), Err(e))
         }
     }
 
@@ -101,6 +158,60 @@ impl Exif {
     pub fn get_field(&self, tag: Tag, ifd_num: In) -> Option<&Field> {
         self.entry_map.get(&(ifd_num, tag))
             .map(|&i| self.entries[i].ref_field(&self.buf, self.little_endian))
+    }
+
+    /// Returns the detected MakerNote vendor.
+    ///
+    /// Returns `Ok(vendor)` if a MakerNote was found and the vendor was detected,
+    /// or `Err(Error::MakerNoteNotFound)` if no MakerNote field exists,
+    /// or another error if parsing failed.
+    #[inline]
+    pub fn maker_note_vendor(&self) -> Result<MakerNoteVendor, &crate::Error> {
+        self.maker_note_vendor.as_ref().copied()
+    }
+
+    /// Returns a reference to a MakerNote field by tag.
+    ///
+    /// # Arguments
+    /// * `tag` - The MakerTag identifying the vendor-specific field
+    ///
+    /// # Examples
+    /// ```
+    /// # use exif::{Reader, make_note::maker_tag::{MakerTag, MakerNoteVendor}};
+    /// # let file = std::fs::File::open("tests/exif.jpg").unwrap();
+    /// # let exif = Reader::new().read_from_container(
+    /// #     &mut std::io::BufReader::new(&file)).unwrap();
+    /// // Get a specific MakerNote field
+    /// let vendor = exif.maker_note_vendor().ok().copied()?;
+    /// let tag = MakerTag::new(vendor, 0x0002);
+    /// let field = exif.get_maker_note_field(&tag)?;
+    /// println!("{}: {}", field.tag, field.display_value());
+    /// # Some(()) }
+    /// ```
+    #[inline]
+    pub fn get_maker_note_field(&self, tag: &MakerTag) -> Option<&MakerNoteField> {
+        self.maker_note_fields.get(tag)
+    }
+
+    /// Returns an iterator over all parsed MakerNote fields.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() { sub(); }
+    /// # fn sub() -> Option<()> {
+    /// # use exif::Reader;
+    /// # let file = std::fs::File::open("tests/exif.jpg").unwrap();
+    /// # let exif = Reader::new().read_from_container(
+    /// #     &mut std::io::BufReader::new(&file)).unwrap();
+    /// // Iterate over all MakerNote fields
+    /// for field in exif.maker_note_fields() {
+    ///     println!("{}: {}", field.tag, field.display_value());
+    /// }
+    /// # Some(()) }
+    /// ```
+    #[inline]
+    pub fn maker_note_fields(&self) -> impl Iterator<Item = &MakerNoteField> {
+        self.maker_note_fields.values()
     }
 }
 
