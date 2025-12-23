@@ -2,7 +2,7 @@
 name = "exif"
 version = "0.6.1"
 authors = ["KAMADA Ken'ichi <kamada@nanohz.org>"]
-edition = "2021"
+edition = "2018"
 rust-version = "1.60"
 
 description = "Exif parsing library written in pure Rust"
@@ -14,6 +14,10 @@ keywords = ["Exif", "JPEG", "parser", "reader", "TIFF"]
 categories = ["multimedia::encoding", "multimedia::images", "parser-implementations"]
 license = "BSD-2-Clause"
 
+[features]
+default = []
+make_note = ["dep:strum"]
+
 [dependencies]
 mutate_once = "0.1.1"
-strum = { version = "0.26", features = ["derive"] }
+strum = { version = "0.27", features = ["derive"], optional = true }

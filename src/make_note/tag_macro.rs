@@ -165,6 +165,7 @@ macro_rules! impl_simple_enum_make_note_raw_parse {
     ($ty:ty, u16) => {
         impl StructuredMakerNoteData for $ty {
             fn raw_parse(data: &[u8], le: Option<bool>) -> Option<Self> {
+                use core::convert::TryInto;
                 let bytes: [u8; 2] = data.get(0..2)?.try_into().ok()?;
                 let v = match le {
                     Some(false) => u16::from_be_bytes(bytes),
@@ -178,6 +179,7 @@ macro_rules! impl_simple_enum_make_note_raw_parse {
     ($ty:ty, u32) => {
         impl StructuredMakerNoteData for $ty {
             fn raw_parse(data: &[u8], le: Option<bool>) -> Option<Self> {
+                use core::convert::TryInto;
                 let bytes: [u8; 4] = data.get(0..4)?.try_into().ok()?;
                 let v = match le {
                     Some(false) => u32::from_be_bytes(bytes),

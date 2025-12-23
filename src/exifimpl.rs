@@ -28,6 +28,7 @@ use std::collections::HashMap;
 
 use crate::tag::Tag;
 use crate::tiff::{Field, IfdEntry, In, ProvideUnit};
+#[cfg(feature = "make_note")]
 use crate::make_note::maker_tag::{MakerNoteField, MakerNoteVendor, MakerTag};
 
 /// A struct that holds the parsed Exif attributes.
@@ -62,8 +63,10 @@ pub struct Exif {
     little_endian: bool,
     // MakerNote fields parsed by vendor-specific parser.
     // HashMap for quick access by (vendor, tag_number).
+    #[cfg(feature = "make_note")]
     maker_note_fields: HashMap<MakerTag, MakerNoteField>,
     // MakerNote vendor detected from the data, or error if not found.
+    #[cfg(feature = "make_note")]
     maker_note_vendor: Result<MakerNoteVendor, crate::Error>,
 }
 
@@ -75,6 +78,7 @@ impl Exif {
             .map(|(i, e)| (e.ifd_num_tag(), i)).collect();
 
         // Try to parse MakerNote if present
+        #[cfg(feature = "make_note")]
         let (maker_note_fields, maker_note_vendor) = Self::parse_maker_note_internal(&buf, &entries, little_endian);
 
         Self {
@@ -82,12 +86,15 @@ impl Exif {
             entries: entries,
             entry_map: entry_map,
             little_endian: little_endian,
+            #[cfg(feature = "make_note")]
             maker_note_fields,
+            #[cfg(feature = "make_note")]
             maker_note_vendor,
         }
     }
 
     /// Internal helper to parse MakerNote data
+    #[cfg(feature = "make_note")]
     fn parse_maker_note_internal(
         buf: &[u8],
         entries: &[IfdEntry],
@@ -121,14 +128,21 @@ impl Exif {
             });
 
         // Parse MakerNote with vendor detection
-        match crate::make_note::parse_make_note_with_vendor(data, offset, make) {
-            Ok((fields, vendor, _le)) => {
-                let map = fields.into_iter()
-                    .map(|f| (f.tag, f))
-                    .collect();
-                (map, Ok(vendor))
+        #[cfg(feature = "make_note")]
+        {
+            match crate::make_note::parse_make_note_with_vendor(data, offset, make) {
+                Ok((fields, vendor, _le)) => {
+                    let map = fields.into_iter()
+                        .map(|f| (f.tag, f))
+                        .collect();
+                    (map, Ok(vendor))
+                }
+                Err(e) => (HashMap::new(), Err(e))
             }
-            Err(e) => (HashMap::new(), Err(e))
+        }
+        #[cfg(not(feature = "make_note"))]
+        {
+            (HashMap::new(), Err(crate::Error::NotFound("MakerNote parsing disabled")))
         }
     }
 
@@ -166,6 +180,7 @@ impl Exif {
     /// or `Err(Error::MakerNoteNotFound)` if no MakerNote field exists,
     /// or another error if parsing failed.
     #[inline]
+    #[cfg(feature = "make_note")]
     pub fn maker_note_vendor(&self) -> Result<MakerNoteVendor, &crate::Error> {
         self.maker_note_vendor.as_ref().copied()
     }
@@ -189,6 +204,7 @@ impl Exif {
     /// # Some(()) }
     /// ```
     #[inline]
+    #[cfg(feature = "make_note")]
     pub fn get_maker_note_field(&self, tag: &MakerTag) -> Option<&MakerNoteField> {
         self.maker_note_fields.get(tag)
     }
@@ -210,6 +226,7 @@ impl Exif {
     /// # Some(()) }
     /// ```
     #[inline]
+    #[cfg(feature = "make_note")]
     pub fn maker_note_fields(&self) -> impl Iterator<Item = &MakerNoteField> {
         self.maker_note_fields.values()
     }
