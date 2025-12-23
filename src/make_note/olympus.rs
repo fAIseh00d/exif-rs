@@ -3,8 +3,63 @@
 // Based on https://exiftool.org/TagNames/Olympus.html
 //
 
-use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor};
+use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor, StructuredMakerNoteData};
 use crate::make_note::maker_tag::d_undef_as_string;
+use strum::{Display, FromRepr};
+
+/// Olympus Flash Mode (Tag 0x1004)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u16)]
+pub enum OlympusFlashMode {
+    #[strum(serialize = "Off")]
+    Off = 0,
+    #[strum(serialize = "On")]
+    On = 1,
+}
+
+impl_simple_enum_make_note_raw_parse!(OlympusFlashMode, u16);
+
+/// Olympus Focus Mode (Tag 0x100b)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u16)]
+pub enum OlympusFocusMode {
+    #[strum(serialize = "Auto")]
+    Auto = 0,
+    #[strum(serialize = "Manual")]
+    Manual = 1,
+}
+
+impl_simple_enum_make_note_raw_parse!(OlympusFocusMode, u16);
+
+/// Olympus Focus Range (Tag 0x100a)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u16)]
+pub enum OlympusFocusRange {
+    #[strum(serialize = "Normal")]
+    Normal = 0,
+    #[strum(serialize = "Macro")]
+    Macro = 1,
+}
+
+impl_simple_enum_make_note_raw_parse!(OlympusFocusRange, u16);
+
+/// Olympus Image Stabilization (Tag CameraSettings:0x0604)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u8)]
+pub enum OlympusImageStabilization {
+    #[strum(serialize = "Off")]
+    Off = 0,
+    #[strum(serialize = "On")]
+    On = 1,
+    #[strum(serialize = "On, Mode 1")]
+    OnMode1 = 2,
+    #[strum(serialize = "On, Mode 2")]
+    OnMode2 = 3,
+    #[strum(serialize = "On, Mode 3")]
+    OnMode3 = 4,
+}
+
+impl_simple_enum_make_note_raw_parse!(OlympusImageStabilization, u8);
 
 generate_maker_tags! {
     vendor: Olympus,

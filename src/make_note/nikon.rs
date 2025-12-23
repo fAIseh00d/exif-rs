@@ -3,10 +3,10 @@
 // Based on https://exiftool.org/TagNames/Nikon.html
 //
 
-use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor};
+use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor, StructuredMakerNoteData};
 use crate::make_note::maker_tag::{extract_string, extract_optional_string};
+use strum::{Display, FromRepr};
 
-use crate::Value;
 
 /// Nikon Picture Control Data parsed structure
 /// Based on https://exiftool.org/TagNames/Nikon.html#PictureControl
@@ -48,10 +48,109 @@ impl std::fmt::Display for NikonPictureControl {
     }
 }
 
-impl NikonPictureControl {
+/// Nikon AF Area Mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u8)]
+pub enum NikonAFAreaMode {
+    #[strum(serialize = "Single Area")]
+    SingleArea = 0,
+    #[strum(serialize = "Dynamic Area")]
+    DynamicArea = 1,
+    #[strum(serialize = "Dynamic Area (closest)")]
+    DynamicAreaClosest = 2,
+    #[strum(serialize = "Group Dynamic")]
+    GroupDynamic = 3,
+    #[strum(serialize = "Single Area (wide)")]
+    SingleAreaWide = 4,
+    #[strum(serialize = "Dynamic Area (wide)")]
+    DynamicAreaWide = 5,
+}
+
+impl_simple_enum_make_note_raw_parse!(NikonAFAreaMode, u8);
+
+/// Nikon AF Point
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u8)]
+pub enum NikonAFPoint {
+    #[strum(serialize = "Center")]
+    Center = 0,
+    #[strum(serialize = "Top")]
+    Top = 1,
+    #[strum(serialize = "Bottom")]
+    Bottom = 2,
+    #[strum(serialize = "Mid-left")]
+    MidLeft = 3,
+    #[strum(serialize = "Mid-right")]
+    MidRight = 4,
+    #[strum(serialize = "Upper-left")]
+    UpperLeft = 5,
+    #[strum(serialize = "Upper-right")]
+    UpperRight = 6,
+    #[strum(serialize = "Lower-left")]
+    LowerLeft = 7,
+    #[strum(serialize = "Lower-right")]
+    LowerRight = 8,
+    #[strum(serialize = "Far Left")]
+    FarLeft = 9,
+    #[strum(serialize = "Far Right")]
+    FarRight = 10,
+}
+
+impl_simple_enum_make_note_raw_parse!(NikonAFPoint, u8);
+
+/// Nikon AF Info parsed structure
+/// Based on https://exiftool.org/TagNames/Nikon.html
+#[derive(Debug, Clone, PartialEq)]
+pub struct NikonAFInfo {
+    pub af_area_mode: Option<NikonAFAreaMode>,
+    pub af_point: Option<NikonAFPoint>,
+    pub af_points_in_focus: u16,
+}
+
+impl std::fmt::Display for NikonAFInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Mode:{}, Point:{}, InFocus:0x{:04X}",
+            self.af_area_mode.map(|m| m.to_string()).unwrap_or_else(|| "Unknown".to_string()),
+            self.af_point.map(|p| p.to_string()).unwrap_or_else(|| "Unknown".to_string()),
+            self.af_points_in_focus
+        )
+    }
+}
+
+impl StructuredMakerNoteData for NikonAFInfo {
+    /// Parse Nikon AF Info from raw bytes using zero-copy transmute
+    /// Based on https://exiftool.org/TagNames/Nikon.html
+    ///
+    /// Nikon uses big-endian, so `le` parameter is ignored
+    fn raw_parse(data: &[u8], _le: Option<bool>) -> Option<NikonAFInfo> {
+        #[repr(C)]
+        struct AFInfoRaw {
+            af_area_mode: u8,
+            af_point: u8,
+            af_points_in_focus: [u8; 2],  // Big-endian int16u
+        }
+
+        if data.len() < core::mem::size_of::<AFInfoRaw>() {
+            return None;
+        }
+
+        let raw: &AFInfoRaw = unsafe { core::mem::transmute(data.as_ptr()) };
+
+        Some(NikonAFInfo {
+            af_area_mode: NikonAFAreaMode::from_repr(raw.af_area_mode),
+            af_point: NikonAFPoint::from_repr(raw.af_point),
+            af_points_in_focus: u16::from_be_bytes(raw.af_points_in_focus),
+        })
+    }
+}
+
+
+impl StructuredMakerNoteData for NikonPictureControl {
     /// Parse Nikon Picture Control Data from raw bytes using zero-copy transmute
     /// Based on https://exiftool.org/TagNames/Nikon.html#PictureControl
-    fn raw_parse(data: &[u8]) -> Option<NikonPictureControl> {
+    ///
+    /// Nikon uses big-endian, so `le` parameter is ignored
+    fn raw_parse(data: &[u8], _le: Option<bool>) -> Option<NikonPictureControl> {
         /// Raw binary layout for Picture Control Data (Version 01xx/02xx)
         /// Based on https://exiftool.org/TagNames/Nikon.html#PictureControl
         #[repr(C)]
@@ -161,23 +260,6 @@ impl NikonPictureControl {
         }
     }
 
-    /// Display function for Picture Control Data tags
-    fn from_value_to_string(value: &Value) -> String {
-        if let Value::Undefined(data, _) = value {
-            if let Some(parsed) = Self::raw_parse(data) {
-                return parsed.to_string();
-            }
-        }
-        String::from("<invalid>")
-    }
-
-    /// Extract optional struct type (returns None if empty)
-    pub fn from_value(value: &Value) -> Option<Self> {
-        match value {
-            Value::Undefined(data, _) => Self::raw_parse(data),
-            _ => None,
-        }
-    }
 }
 
 
@@ -243,7 +325,7 @@ generate_maker_tags! {
     (ManualFocusDistance, 0x0085, "Manual Focus Distance"),
     (DigitalZoom, 0x0086, "Digital Zoom"),
     (FlashMode, 0x0087, "Flash Mode"),
-    (AFInfo, 0x0088, "AF Info"),
+    (AFInfo, 0x0088, "AF Info", NikonAFInfo::from_value_to_string),
     (ShootingMode, 0x0089, "Shooting Mode"),
     (LensFStops, 0x008b, "Lens F Stops"),
     (ContrastCurve, 0x008c, "Contrast Curve"),

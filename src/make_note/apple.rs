@@ -3,7 +3,49 @@
 // Based on iPhoto information with iPhone 17 Pro
 //
 
-use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor};
+use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor, StructuredMakerNoteData};
+use crate::Value;
+
+/// Apple Acceleration Vector (3D acceleration in units of g)
+/// Based on https://exiftool.org/TagNames/Apple.html
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppleAccelerationVector {
+    pub x: f64,  // Positive X = toward left side of phone
+    pub y: f64,  // Positive Y = toward bottom of phone
+    pub z: f64,  // Positive Z = into face of phone
+}
+
+impl std::fmt::Display for AppleAccelerationVector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "X:{:.3}g, Y:{:.3}g, Z:{:.3}g", self.x, self.y, self.z)
+    }
+}
+
+impl StructuredMakerNoteData for AppleAccelerationVector {
+    /// Parse from raw bytes (not applicable for rational data)
+    /// This struct uses Value::SRational directly, so raw_parse returns None
+    fn raw_parse(_data: &[u8], _le: Option<bool>) -> Option<Self> {
+        None
+    }
+
+    /// Extract from Value type
+    /// Apple stores acceleration as rational64s[3], so we handle SRational directly
+    fn from_value(value: &Value, _le: Option<bool>) -> Option<Self> {
+        match value {
+            Value::SRational(rationals) => {
+                if rationals.len() != 3 {
+                    return None;
+                }
+                Some(AppleAccelerationVector {
+                    x: rationals[0].to_f64(),
+                    y: rationals[1].to_f64(),
+                    z: rationals[2].to_f64(),
+                })
+            }
+            _ => None,
+        }
+    }
+}
 
 /// Detect byte order from Apple MakerNote header.
 ///
@@ -47,7 +89,7 @@ generate_maker_tags! {
     (AETarget, 0x0005, "AE Target"),
     (AEAverage, 0x0006, "AE Average"),
     (AFStable, 0x0007, "AF Stable"),
-    (AccelerationVector, 0x0008, "Acceleration Vector"),
+    (AccelerationVector, 0x0008, "Acceleration Vector", AppleAccelerationVector::from_value_to_string),
     (FocusDistanceRange, 0x000c, "Focus Distance Range"),
     (Apple_0x000d, 0x000d, "Apple 0x000d"),
     (Apple_0x000e, 0x000e, "Apple 0x000e"),

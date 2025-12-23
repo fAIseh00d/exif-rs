@@ -2,10 +2,87 @@
 // Samsung MakerNote Tag definitions
 // Based on NX500 EXIF tags
 // MakerNote data was observed in files produced by Samsung NX mirrorless cameras.
-// However No EXIF MakerNote was detected in images taken with Samsung Galaxy smartphones; 
+// However No EXIF MakerNote was detected in images taken with Samsung Galaxy smartphones;
 //
 
-use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor};
+use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor, StructuredMakerNoteData};
+use crate::Value;
+
+/// Samsung Color Matrix (3x3) parsed structure
+/// Based on https://exiftool.org/TagNames/Samsung.html
+#[derive(Debug, Clone, PartialEq)]
+pub struct SamsungColorMatrix {
+    pub matrix: [[i32; 3]; 3],
+}
+
+impl std::fmt::Display for SamsungColorMatrix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[")?;
+        for (i, row) in self.matrix.iter().enumerate() {
+            if i > 0 {
+                write!(f, "; ")?;
+            }
+            write!(f, "{}, {}, {}", row[0], row[1], row[2])?;
+        }
+        write!(f, "]")
+    }
+}
+
+impl StructuredMakerNoteData for SamsungColorMatrix {
+    /// Parse Samsung Color Matrix from raw bytes
+    /// Based on https://exiftool.org/TagNames/Samsung.html
+    ///
+    /// Samsung uses little-endian by default
+    fn raw_parse(data: &[u8], le: Option<bool>) -> Option<SamsungColorMatrix> {
+        let le = le.unwrap_or(true); // Default to little-endian for Samsung
+        // ColorMatrix is int32s[9]
+        if data.len() < 36 {
+            return None;
+        }
+
+        let mut matrix = [[0i32; 3]; 3];
+        for i in 0..9 {
+            let offset = i * 4;
+            let value = if le {
+                i32::from_le_bytes([
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                ])
+            } else {
+                i32::from_be_bytes([
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                ])
+            };
+            matrix[i / 3][i % 3] = value;
+        }
+
+        Some(SamsungColorMatrix { matrix })
+    }
+
+    /// Custom from_value to handle SLong type directly
+    fn from_value(value: &Value, le: Option<bool>) -> Option<Self> {
+        match value {
+            Value::Undefined(data, _) => Self::raw_parse(data, le),
+            Value::Byte(data) => Self::raw_parse(data, le),
+            Value::SLong(values) => {
+                if values.len() != 9 {
+                    return None;
+                }
+                let mut matrix = [[0i32; 3]; 3];
+                for i in 0..9 {
+                    matrix[i / 3][i % 3] = values[i];
+                }
+                Some(SamsungColorMatrix { matrix })
+            }
+            _ => None,
+        }
+    }
+}
 
 /// Detect byte order from Samsung MakerNote IFD structure.
 ///
@@ -99,9 +176,9 @@ generate_maker_tags! {
     (ImageCount, 0x0a2b, "Image Count"),
     (FlashMode, 0x0a2c, "Flash Mode"),
     (ColorTemperature, 0x0a2d, "Color Temperature"),
-    (ColorMatrix, 0x0a2e, "Color Matrix"),
-    (ColorMatrixSRGB, 0x0a2f, "Color Matrix sRGB"),
-    (ColorMatrixAdobeRGB, 0x0a30, "Color Matrix Adobe RGB"),
+    (ColorMatrix, 0x0a2e, "Color Matrix", SamsungColorMatrix::from_value_to_string),
+    (ColorMatrixSRGB, 0x0a2f, "Color Matrix sRGB", SamsungColorMatrix::from_value_to_string),
+    (ColorMatrixAdobeRGB, 0x0a30, "Color Matrix Adobe RGB", SamsungColorMatrix::from_value_to_string),
     (ToneCurve1, 0x0a31, "Tone Curve 1"),
     (ToneCurve2, 0x0a32, "Tone Curve 2"),
     (ToneCurve3, 0x0a33, "Tone Curve 3"),

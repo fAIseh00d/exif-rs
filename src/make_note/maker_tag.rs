@@ -7,6 +7,40 @@ use std::fmt;
 
 use crate::Value;
 
+/// Trait for structured MakerNote data parsing
+///
+/// This trait provides a unified interface for parsing vendor-specific
+/// binary structures in MakerNote tags. Implementations can use techniques
+/// like `#[repr(C)]` zero-copy transmute or manual parsing.
+pub trait StructuredMakerNoteData: Sized + fmt::Display {
+    /// Parse from raw bytes with optional endianness hint
+    ///
+    /// # Arguments
+    /// * `data` - Raw binary data to parse
+    /// * `le` - Optional endianness: Some(true) for little-endian, Some(false) for big-endian, None for auto-detect
+    fn raw_parse(data: &[u8], le: Option<bool>) -> Option<Self>;
+
+    /// Extract from Value type with optional endianness hint
+    ///
+    /// # Arguments
+    /// * `value` - EXIF value containing the data
+    /// * `le` - Optional endianness: Some(true) for little-endian, Some(false) for big-endian, None for auto-detect
+    fn from_value(value: &Value, le: Option<bool>) -> Option<Self> {
+        match value {
+            Value::Undefined(data, _) => Self::raw_parse(data, le),
+            Value::Byte(data) => Self::raw_parse(data, le),
+            _ => None,
+        }
+    }
+
+    /// Convert to display string for tag display function
+    fn from_value_to_string(value: &Value, le: Option<bool>) -> String {
+        Self::from_value(value, le)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| String::from("<invalid>"))
+    }
+}
+
 /// Camera manufacturer/vendor identifier for MakerNote data.
 ///
 /// Reference: https://exiv2.org/makernote.html
@@ -426,8 +460,8 @@ impl fmt::Display for MakerNoteDisplayValue<'_> {
     }
 }
 
-/// Display Undefined value as null-terminated string
-pub(crate) fn d_undef_as_string(value: &Value) -> String {
+/// Display Undefined value as null-terminated string (with ignored endianness parameter for trait compatibility)
+pub(crate) fn d_undef_as_string(value: &Value, _le: Option<bool>) -> String {
     match value {
         Value::Undefined(bytes, _) => {
             let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());

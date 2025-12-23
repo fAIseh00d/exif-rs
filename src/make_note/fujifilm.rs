@@ -3,7 +3,80 @@
 // Based on https://exiftool.org/TagNames/FujiFilm.html
 //
 
-use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor};
+use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor, StructuredMakerNoteData};
+use strum::{Display, FromRepr};
+
+/// FujiFilm Macro (Tag 0x1020)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u16)]
+pub enum FujiFilmMacro {
+    #[strum(serialize = "Off")]
+    Off = 0,
+    #[strum(serialize = "On")]
+    On = 1,
+}
+
+impl_simple_enum_make_note_raw_parse!(FujiFilmMacro, u16);
+
+/// FujiFilm Focus Mode (Tag 0x1021)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u16)]
+pub enum FujiFilmFocusMode {
+    #[strum(serialize = "Auto")]
+    Auto = 0,
+    #[strum(serialize = "Manual")]
+    Manual = 1,
+}
+
+impl_simple_enum_make_note_raw_parse!(FujiFilmFocusMode, u16);
+
+/// FujiFilm Slow Sync (Tag 0x1030)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u16)]
+pub enum FujiFilmSlowSync {
+    #[strum(serialize = "Off")]
+    Off = 0,
+    #[strum(serialize = "On")]
+    On = 1,
+}
+
+impl_simple_enum_make_note_raw_parse!(FujiFilmSlowSync, u16);
+
+/// FujiFilm Blur Warning (Tag 0x1300)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u16)]
+pub enum FujiFilmBlurWarning {
+    #[strum(serialize = "None")]
+    None = 0,
+    #[strum(serialize = "Blur Warning")]
+    BlurWarning = 1,
+}
+
+impl_simple_enum_make_note_raw_parse!(FujiFilmBlurWarning, u16);
+
+/// FujiFilm Focus Warning (Tag 0x1301)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u16)]
+pub enum FujiFilmFocusWarning {
+    #[strum(serialize = "Good")]
+    Good = 0,
+    #[strum(serialize = "Out of focus")]
+    OutOfFocus = 1,
+}
+
+impl_simple_enum_make_note_raw_parse!(FujiFilmFocusWarning, u16);
+
+/// FujiFilm Dynamic Range (Tag 0x1400)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u16)]
+pub enum FujiFilmDynamicRange {
+    #[strum(serialize = "Standard")]
+    Standard = 1,
+    #[strum(serialize = "Wide")]
+    Wide = 3,
+}
+
+impl_simple_enum_make_note_raw_parse!(FujiFilmDynamicRange, u16);
 
 generate_maker_tags! {
     vendor: Fujifilm,

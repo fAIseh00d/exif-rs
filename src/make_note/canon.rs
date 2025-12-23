@@ -5,6 +5,71 @@
 
 use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor};
 
+// Canon Model and Lens type enums (auto-generated)
+pub mod canon_model;
+
+// Re-export for convenience
+pub use canon_model::{CanonModelID, CanonLensType};
+
+// TODO: Implement structured data parsing for Canon tags
+//
+// Canon stores several tags as arrays of int16s with index-based field access.
+// These could be parsed into structured types similar to Nikon's PictureControlData.
+//
+// Key candidates for structured parsing:
+//
+// 1. CanonCameraSettings (0x0001)
+//    - Array of int16s with known field positions
+//    - Index 1: MacroMode
+//    - Index 2: SelfTimer
+//    - Index 4: FlashMode
+//    - Index 5: ContinuousDrive
+//    - Index 7: FocusMode
+//    - Index 10: ImageSize
+//    - Index 11: EasyMode
+//    - Index 13: Contrast
+//    - Index 14: Saturation
+//    - Index 15: Sharpness
+//    - Index 17: MeteringMode
+//    - Index 19: AutoISO
+//    - Index 20: ISOValue
+//    - And many more...
+//    - Reference: https://exiftool.org/TagNames/Canon.html#CameraSettings
+//
+// 2. CanonShotInfo (0x0004)
+//    - Array of int16s/int32s with variable-length structure
+//    - Different field positions based on camera model
+//    - Reference: https://exiftool.org/TagNames/Canon.html#ShotInfo
+//
+// 3. CanonAFInfo (0x0012)
+//    - Array structure with AF point information
+//    - Reference: https://exiftool.org/TagNames/Canon.html#AFInfo
+//
+// 4. CanonFileInfo (0x0093)
+//    - Array of int16s with file-related metadata
+//    - Reference: https://exiftool.org/TagNames/Canon.html#FileInfo
+//
+// Implementation approach:
+// - Unlike Nikon's fixed binary layout, Canon uses int16/int32 arrays
+// - Cannot use simple #[repr(C)] transmute due to variable-length arrays
+// - Consider implementing array indexing parser with struct output
+// - May need model-specific parsing for some tags (especially ShotInfo)
+//
+// Example implementation pattern:
+// ```rust
+// pub struct CanonCameraSettings {
+//     pub macro_mode: Option<i16>,        // Index 1
+//     pub self_timer: Option<i16>,        // Index 2
+//     pub flash_mode: Option<i16>,        // Index 4
+//     pub continuous_drive: Option<i16>,  // Index 5
+//     // ... more fields
+// }
+//
+// fn parse_camera_settings(data: &[u8]) -> Option<CanonCameraSettings> {
+//     // Parse as array of i16s and extract by index
+// }
+// ```
+
 generate_maker_tags! {
     vendor: Canon,
     tags: [

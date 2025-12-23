@@ -60,7 +60,7 @@ macro_rules! generate_maker_tags {
                     $(
                         $num => {
                             $(
-                                return Some($dispfn(value));
+                                return Some($dispfn(value, None));
                             )?
                             #[allow(unreachable_code)]
                             None
@@ -116,7 +116,7 @@ macro_rules! generate_maker_tags {
                 $(
                     $num => {
                         $(
-                            return Some($dispfn(value));
+                            return Some($dispfn(value, None));
                         )?
                         #[allow(unreachable_code)]
                         None
@@ -126,4 +126,65 @@ macro_rules! generate_maker_tags {
             }
         }
     }
+}
+
+/// Implements `StructuredMakerNoteData` for simple MakerNote enums.
+///
+/// This macro is intended **only for enum-based MakerNote tags** that:
+/// - Use a primitive integer representation (`u8`, `u16`, or `u32`)
+/// - Derive `FromRepr` and `Display` via `strum`
+/// - Map the raw MakerNote value directly to an enum discriminant
+///
+/// The generated implementation:
+/// - Parses raw byte data using the specified integer width
+/// - Applies endianness as follows:
+///   - `Some(true)` or `None` : little-endian
+///   - `Some(false)` : big-endian
+/// - Converts the parsed value using `FromRepr`
+///
+/// # Example
+/// ```ignore
+/// #[derive(Debug, Copy, Clone, Display, FromRepr)]
+/// #[repr(u16)]
+/// enum PanasonicImageStabilization {
+///     OnOptical = 2,
+///     Off = 1,
+/// }
+///
+/// impl_simple_enum_make_note_raw_parse!(PanasonicImageStabilization, u16);
+/// ```
+macro_rules! impl_simple_enum_make_note_raw_parse {
+    ($ty:ty, u8) => {
+        impl StructuredMakerNoteData for $ty {
+            fn raw_parse(data: &[u8], _: Option<bool>) -> Option<Self> {
+                <$ty>::from_repr(*data.get(0)?)
+            }
+        }
+    };
+
+    ($ty:ty, u16) => {
+        impl StructuredMakerNoteData for $ty {
+            fn raw_parse(data: &[u8], le: Option<bool>) -> Option<Self> {
+                let bytes: [u8; 2] = data.get(0..2)?.try_into().ok()?;
+                let v = match le {
+                    Some(false) => u16::from_be_bytes(bytes),
+                    _ => u16::from_le_bytes(bytes),
+                };
+                <$ty>::from_repr(v)
+            }
+        }
+    };
+
+    ($ty:ty, u32) => {
+        impl StructuredMakerNoteData for $ty {
+            fn raw_parse(data: &[u8], le: Option<bool>) -> Option<Self> {
+                let bytes: [u8; 4] = data.get(0..4)?.try_into().ok()?;
+                let v = match le {
+                    Some(false) => u32::from_be_bytes(bytes),
+                    _ => u32::from_le_bytes(bytes),
+                };
+                <$ty>::from_repr(v)
+            }
+        }
+    };
 }

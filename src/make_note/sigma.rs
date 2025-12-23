@@ -3,7 +3,34 @@
 // Reference: https://exiv2.org/tags-sigma.html
 //
 
-use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor};
+use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor, StructuredMakerNoteData};
+use strum::{Display, FromRepr};
+
+/// Sigma Color Mode (Tag 0x002c)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u32)]
+pub enum SigmaColorMode {
+    #[strum(serialize = "n/a")]
+    NA = 0,
+    #[strum(serialize = "Sepia")]
+    Sepia = 1,
+    #[strum(serialize = "B&W")]
+    BW = 2,
+    #[strum(serialize = "Standard")]
+    Standard = 3,
+    #[strum(serialize = "Vivid")]
+    Vivid = 4,
+    #[strum(serialize = "Neutral")]
+    Neutral = 5,
+    #[strum(serialize = "Portrait")]
+    Portrait = 6,
+    #[strum(serialize = "Landscape")]
+    Landscape = 7,
+    #[strum(serialize = "FOV Classic Blue")]
+    FOVClassicBlue = 8,
+}
+
+impl_simple_enum_make_note_raw_parse!(SigmaColorMode, u32);
 
 generate_maker_tags! {
     vendor: Sigma,
