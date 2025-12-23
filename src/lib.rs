@@ -99,7 +99,7 @@ pub use tiff::parse_exif;
 pub use value::Value;
 pub use value::{Rational, SRational};
 #[cfg(feature = "make_note")]
-pub use make_note::maker_tag::MakerNoteVendor;
+pub use make_note::maker_tag::{MakerNoteVendor, StructuredMakerNoteData};
 #[cfg(feature = "make_note")]
 pub use make_note::{apple, canon, fujifilm, nikon, olympus, panasonic};
 #[cfg(feature = "make_note")]
