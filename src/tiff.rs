@@ -55,6 +55,7 @@ pub struct IfdEntry {
 impl IfdEntry {
     /// Creates a new IfdEntry from a Field.
     /// This is mainly used internally for MakerNote parsing.
+    #[cfg(feature = "make_note")]
     pub(crate) fn from_field(field: Field) -> Self {
         IfdEntry {
             field: MutOnce::from(field),
@@ -82,6 +83,7 @@ impl IfdEntry {
     }
 
     // Generic parsing for MakerNote entries without tag-specific handling
+    #[cfg(feature = "make_note")]
     pub(crate) fn into_field_generic(self, data: &[u8], le: bool) -> Field {
         self.parse_generic(data, le);
         self.field.into_inner()
@@ -99,6 +101,7 @@ impl IfdEntry {
     }
 
     // Generic parsing without tag-specific handling (for MakerNote)
+    #[cfg(feature = "make_note")]
     fn parse_generic(&self, data: &[u8], le: bool) {
         if !self.field.is_fixed() {
             let mut field = self.field.get_mut();
