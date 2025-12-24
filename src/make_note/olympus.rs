@@ -61,6 +61,94 @@ pub enum OlympusImageStabilization {
 
 impl_simple_enum_make_note_raw_parse!(OlympusImageStabilization, u8);
 
+/// Olympus Picture Mode (Tag CameraSettings:0x0520)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u16)]
+pub enum OlympusPictureMode {
+    #[strum(serialize = "Vivid")]
+    Vivid = 1,
+    #[strum(serialize = "Natural")]
+    Natural = 2,
+    #[strum(serialize = "Muted")]
+    Muted = 3,
+    #[strum(serialize = "Portrait")]
+    Portrait = 4,
+    #[strum(serialize = "i-Enhance")]
+    IEnhance = 5,
+    #[strum(serialize = "e-Portrait")]
+    EPortrait = 6,
+    #[strum(serialize = "Color Creator")]
+    ColorCreator = 7,
+    #[strum(serialize = "Underwater")]
+    Underwater = 8,
+    #[strum(serialize = "Color Profile 1")]
+    ColorProfile1 = 9,
+    #[strum(serialize = "Color Profile 2")]
+    ColorProfile2 = 10,
+    #[strum(serialize = "Color Profile 3")]
+    ColorProfile3 = 11,
+    #[strum(serialize = "Monochrome Profile 1")]
+    MonochromeProfile1 = 12,
+    #[strum(serialize = "Monochrome Profile 2")]
+    MonochromeProfile2 = 13,
+    #[strum(serialize = "Art Mode")]
+    ArtMode = 17,
+    #[strum(serialize = "Monochrome Profile 3")]
+    MonochromeProfile3 = 18,
+    #[strum(serialize = "Monotone")]
+    Monotone = 256,
+    #[strum(serialize = "Sepia")]
+    Sepia = 512,
+}
+
+impl_simple_enum_make_note_raw_parse!(OlympusPictureMode, u16);
+
+/// Olympus Art Filter (Tag CameraSettings:0x0529)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u16)]
+pub enum OlympusArtFilter {
+    #[strum(serialize = "Off")]
+    Off = 0,
+    #[strum(serialize = "Soft Focus")]
+    SoftFocus = 1,
+    #[strum(serialize = "Pop Art")]
+    PopArt = 2,
+    #[strum(serialize = "Pale & Light Color")]
+    PaleLightColor = 3,
+    #[strum(serialize = "Light Tone")]
+    LightTone = 4,
+    #[strum(serialize = "Pin Hole")]
+    PinHole = 5,
+    #[strum(serialize = "Grainy Film")]
+    GrainyFilm = 6,
+    #[strum(serialize = "Underwater")]
+    Underwater = 8,
+    #[strum(serialize = "Diorama")]
+    Diorama = 9,
+    #[strum(serialize = "Cross Process")]
+    CrossProcess = 10,
+    #[strum(serialize = "Fish Eye")]
+    FishEye = 12,
+    #[strum(serialize = "Drawing")]
+    Drawing = 13,
+}
+
+impl_simple_enum_make_note_raw_parse!(OlympusArtFilter, u16);
+
+/// Olympus Color Space (Tag CameraSettings:0x0507)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u16)]
+pub enum OlympusColorSpace {
+    #[strum(serialize = "sRGB")]
+    SRGB = 0,
+    #[strum(serialize = "Adobe RGB")]
+    AdobeRGB = 1,
+    #[strum(serialize = "Pro Photo RGB")]
+    ProPhotoRGB = 2,
+}
+
+impl_simple_enum_make_note_raw_parse!(OlympusColorSpace, u16);
+
 generate_maker_tags! {
     vendor: Olympus,
     tags: [

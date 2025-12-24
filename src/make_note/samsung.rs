@@ -7,6 +7,7 @@
 
 use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor, StructuredMakerNoteData};
 use crate::Value;
+use strum::{Display, FromRepr};
 
 /// Samsung Color Matrix (3x3) parsed structure
 /// Based on https://exiftool.org/TagNames/Samsung.html
@@ -83,6 +84,76 @@ impl StructuredMakerNoteData for SamsungColorMatrix {
         }
     }
 }
+
+/// Samsung Picture Wizard Mode (Tag 0x0a01)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u16)]
+pub enum SamsungPictureWizardMode {
+    #[strum(serialize = "Standard")]
+    Standard = 0,
+    #[strum(serialize = "Vivid")]
+    Vivid = 1,
+    #[strum(serialize = "Portrait")]
+    Portrait = 2,
+    #[strum(serialize = "Landscape")]
+    Landscape = 3,
+    #[strum(serialize = "Forest")]
+    Forest = 4,
+    #[strum(serialize = "Retro")]
+    Retro = 5,
+    #[strum(serialize = "Cool")]
+    Cool = 6,
+    #[strum(serialize = "Calm")]
+    Calm = 7,
+    #[strum(serialize = "Classic")]
+    Classic = 8,
+    #[strum(serialize = "Custom1")]
+    Custom1 = 9,
+    #[strum(serialize = "Custom2")]
+    Custom2 = 10,
+    #[strum(serialize = "Custom3")]
+    Custom3 = 11,
+    #[strum(serialize = "n/a")]
+    NA = 255,
+}
+
+impl_simple_enum_make_note_raw_parse!(SamsungPictureWizardMode, u16);
+
+/// Samsung Smart Album Color (Tag 0x0a00)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u16)]
+pub enum SamsungSmartAlbumColor {
+    #[strum(serialize = "Red")]
+    Red = 0,
+    #[strum(serialize = "Yellow")]
+    Yellow = 1,
+    #[strum(serialize = "Green")]
+    Green = 2,
+    #[strum(serialize = "Blue")]
+    Blue = 3,
+    #[strum(serialize = "Magenta")]
+    Magenta = 4,
+    #[strum(serialize = "Black")]
+    Black = 5,
+    #[strum(serialize = "White")]
+    White = 6,
+    #[strum(serialize = "Various")]
+    Various = 7,
+}
+
+impl_simple_enum_make_note_raw_parse!(SamsungSmartAlbumColor, u16);
+
+/// Samsung Color Space (Tag 0x0a26)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u16)]
+pub enum SamsungColorSpace {
+    #[strum(serialize = "sRGB")]
+    SRGB = 0,
+    #[strum(serialize = "Adobe RGB")]
+    AdobeRGB = 1,
+}
+
+impl_simple_enum_make_note_raw_parse!(SamsungColorSpace, u16);
 
 /// Detect byte order from Samsung MakerNote IFD structure.
 ///

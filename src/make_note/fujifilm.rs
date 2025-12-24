@@ -78,6 +78,51 @@ pub enum FujiFilmDynamicRange {
 
 impl_simple_enum_make_note_raw_parse!(FujiFilmDynamicRange, u16);
 
+/// FujiFilm Film Mode (Tag 0x1401)
+/// Film simulation modes
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u16)]
+pub enum FujiFilmFilmMode {
+    #[strum(serialize = "F0/Standard (Provia)")]
+    F0Standard = 0x0,
+    #[strum(serialize = "F1/Studio Portrait")]
+    F1StudioPortrait = 0x100,
+    #[strum(serialize = "F1a/Studio Portrait Enhanced Saturation")]
+    F1aStudioPortraitEnhanced = 0x110,
+    #[strum(serialize = "F1b/Studio Portrait Smooth Skin Tone (Astia)")]
+    F1bStudioPortraitSmooth = 0x120,
+    #[strum(serialize = "F2/Fujichrome (Velvia)")]
+    F2Fujichrome = 0x200,
+    #[strum(serialize = "F4/Velvia")]
+    F4Velvia = 0x400,
+    #[strum(serialize = "Pro Neg. Std")]
+    ProNegStd = 0x500,
+    #[strum(serialize = "Classic Chrome")]
+    ClassicChrome = 0x600,
+    #[strum(serialize = "Eterna")]
+    Eterna = 0x700,
+    #[strum(serialize = "Classic Negative")]
+    ClassicNegative = 0x800,
+    #[strum(serialize = "Bleach Bypass")]
+    BleachBypass = 0x900,
+}
+
+impl_simple_enum_make_note_raw_parse!(FujiFilmFilmMode, u16);
+
+/// FujiFilm Color Mode (Tag 0x1210)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, FromRepr)]
+#[repr(u16)]
+pub enum FujiFilmColorMode {
+    #[strum(serialize = "Standard")]
+    Standard = 0x0,
+    #[strum(serialize = "Chrome")]
+    Chrome = 0x10,
+    #[strum(serialize = "B & W")]
+    BW = 0x30,
+}
+
+impl_simple_enum_make_note_raw_parse!(FujiFilmColorMode, u16);
+
 generate_maker_tags! {
     vendor: Fujifilm,
     tags: [
