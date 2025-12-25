@@ -3,9 +3,7 @@
 // Based on iPhoto information with iPhone 17 Pro
 //
 
-use crate::endian::{BigEndian, Endian};
 use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor, StructuredMakerNoteData};
-use crate::tiff::{TIFF_BE, TIFF_LE};
 use crate::Value;
 
 /// Apple Acceleration Vector (3D acceleration in units of g)
@@ -46,36 +44,6 @@ impl StructuredMakerNoteData for AppleAccelerationVector {
             }
             _ => None,
         }
-    }
-}
-
-/// Detect byte order from Apple MakerNote header.
-///
-/// Apple MakerNote structure:
-/// - "Apple iOS\0" (10 bytes)
-/// - Version (2 bytes)
-/// - Byte order marker: "MM" or "II" (2 bytes)
-/// - IFD entry count and data follow
-///
-/// # Arguments
-/// * `data` - The full MakerNote data starting with "Apple iOS"
-///
-/// # Returns
-/// `true` if little-endian (II), `false` if big-endian (MM)
-pub(crate) fn detect_apple_byte_order(data: &[u8]) -> bool {
-    // Need at least 14 bytes: "Apple iOS\0" (10) + version (2) + byte order (2)
-    if data.len() < 14 {
-        return false; // Default to big-endian if not enough data
-    }
-
-    // Check byte order marker at offset 12-13
-    // "II" = 0x4949 = little-endian
-    // "MM" = 0x4D4D = big-endian
-    let byte_order = BigEndian::loadu16(data, 12);
-    match byte_order {
-        TIFF_LE => true,  // Little-endian
-        TIFF_BE => false, // Big-endian
-        _ => false,       // Invalid, default to big-endian (most common for Apple)
     }
 }
 

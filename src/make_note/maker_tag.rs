@@ -44,7 +44,7 @@ pub trait StructuredMakerNoteData: Sized + fmt::Display {
 /// Camera manufacturer/vendor identifier for MakerNote data.
 ///
 /// Reference: https://exiv2.org/makernote.html
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, strum::Display)]
 #[non_exhaustive]
 pub enum MakerNoteVendor {
     /// Panasonic / Lumix cameras
@@ -89,8 +89,14 @@ pub enum MakerNoteVendor {
     /// Header: "SIGMA\0\0\0" or "FOVEON\0\0" (8 bytes)
     Sigma,
 
+    /// Ricoh cameras some 
+    /// Header: "RIOCH\0" or no header, starts directly with IFD
+    Ricoh,
+
+    // todo - AocPentax with starting with "AOC\0"
+
     /// Pentax/Ricoh cameras
-    /// Header: "AOC\0" or no header, starts directly with IFD
+    /// Header: Older model "AOC\0", starts directly with IFD
     Pentax,
 
     /// Olympus Equipment subdirectory (0x2010)
@@ -113,33 +119,6 @@ pub enum MakerNoteVendor {
 
     /// Unknown or unsupported vendor
     Unknown,
-}
-
-impl fmt::Display for MakerNoteVendor {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            MakerNoteVendor::Panasonic => write!(f, "Panasonic"),
-            MakerNoteVendor::Nikon => write!(f, "Nikon"),
-            MakerNoteVendor::Canon => write!(f, "Canon"),
-            MakerNoteVendor::Sony => write!(f, "Sony"),
-            MakerNoteVendor::Olympus => write!(f, "Olympus"),
-            MakerNoteVendor::OMSystem => write!(f, "OM System"),
-            MakerNoteVendor::Fujifilm => write!(f, "Fujifilm"),
-            MakerNoteVendor::Leica => write!(f, "Leica"),
-            MakerNoteVendor::Samsung => write!(f, "Samsung"),
-            MakerNoteVendor::Apple => write!(f, "Apple"),
-            MakerNoteVendor::Sigma => write!(f, "Sigma"),
-            MakerNoteVendor::Pentax => write!(f, "Pentax"),
-            // olympus specific
-            MakerNoteVendor::OlympusEquipment => write!(f, "OlympusEquipment"),
-            MakerNoteVendor::OlympusCameraSettings => write!(f, "OlympusCameraSettings"),
-            MakerNoteVendor::OlympusRawDevelopment => write!(f, "OlympusRawDevelopment"),
-            MakerNoteVendor::OlympusImageProcessing => write!(f, "OlympusImageProcessing"),
-            MakerNoteVendor::OlympusFocusInfo => write!(f, "OlympusFocusInfo"),
-            MakerNoteVendor::OlympusRawInfo => write!(f, "OlympusRawInfo"),
-            MakerNoteVendor::Unknown => write!(f, "Unknown"),
-        }
-    }
 }
 
 impl MakerNoteVendor {
@@ -187,10 +166,17 @@ impl MakerNoteVendor {
         else if data.starts_with(b"SIGMA\x00") || data.starts_with(b"FOVEON\x00") {
             MakerNoteVendor::Sigma
         }
-        // Pentax/Ricoh: "AOC\0" or "RICOH\0" header
-        else if data.starts_with(b"AOC\x00") || data.starts_with(b"RICOH\x00") {
+        // Ricoh: "RICOH\0" header
+        else if data.starts_with(b"RICOH\x00") {
+            MakerNoteVendor::Ricoh
+        }
+        // Pentax: "PENTAX \0" header
+        else if data.starts_with(b"PENTAX \x00") {
             MakerNoteVendor::Pentax
         }
+        // todo - AOC style ricoh and pentax
+        // else if data.starts_with(b"AOC\x00")
+        //
         // Canon/Samsung/Pentax/Ricoh: No header, detect from Make field
         else if let Some(make_str) = make {
             if make_str.starts_with("Canon") {
@@ -224,7 +210,8 @@ impl MakerNoteVendor {
             MakerNoteVendor::Samsung => 0,    // No header, starts directly with IFD
             MakerNoteVendor::Apple => 14,     // "Apple iOS\0" (10) + version (2) + "II/MM" (2) = 14 bytes
             MakerNoteVendor::Sigma => 10,     // "SIGMA\0\0\0" or "FOVEON\0\0" (8) + version (2) = 10 bytes
-            MakerNoteVendor::Pentax => 8,     // "AOC\0" (4) + "II/MM" (2) + version (2) or "RICOH\0II" (8) = 8 bytes
+            MakerNoteVendor::Ricoh => 8,      // "RICOH\0II"  (8 ) + "II/MM"
+            MakerNoteVendor::Pentax => 10,    // "PENTAX \0II" (10) + "II/MM"
             // Subdirectories don't have headers (they're already inside parsed data)
             MakerNoteVendor::OlympusEquipment
             | MakerNoteVendor::OlympusCameraSettings
@@ -270,7 +257,7 @@ impl MakerNoteVendor {
             // Nikon, Olympus, OM System, Fujifilm, Samsung, Apple, Pentax - use MakerNote-relative offsets
             MakerNoteVendor::Nikon | MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem |
             MakerNoteVendor::Fujifilm | MakerNoteVendor::Samsung | MakerNoteVendor::Apple |
-            MakerNoteVendor::Pentax => false,
+            MakerNoteVendor::Ricoh | MakerNoteVendor::Pentax => false,
             // Olympus subdirectories use MakerNote-relative offsets (inherited from parent)
             MakerNoteVendor::OlympusEquipment
             | MakerNoteVendor::OlympusCameraSettings
@@ -298,8 +285,8 @@ impl MakerNoteVendor {
             // Nikon Type 3 already has TIFF header after "Nikon\0" + version
             MakerNoteVendor::Nikon => true,
             // Pentax/Ricoh has custom header without proper TIFF header
-            // "AOC\0" + "II/MM" + data or "RICOH\0II" + data
-            MakerNoteVendor::Pentax => false,
+            // "PENTAX \0II" or "RICOH\0II" + "II/MM" + data
+            MakerNoteVendor::Ricoh | MakerNoteVendor::Pentax => false,
             // All other vendors either have no header or need a TIFF header added
             MakerNoteVendor::Panasonic | MakerNoteVendor::Canon | MakerNoteVendor::Sony |
             MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem | MakerNoteVendor::Fujifilm |
@@ -374,7 +361,7 @@ impl MakerTag {
             MakerNoteVendor::Samsung => super::samsung::tag_name(self.number),
             MakerNoteVendor::Apple => super::apple::tag_name(self.number),
             MakerNoteVendor::Sigma => super::sigma::tag_name(self.number),
-            MakerNoteVendor::Pentax => super::pentax::tag_name(self.number),
+            MakerNoteVendor::Ricoh | MakerNoteVendor::Pentax => super::pentax::tag_name(self.number),
             MakerNoteVendor::OlympusEquipment => super::olympus::olympus_equipment_tag_name(self.number),
             MakerNoteVendor::OlympusCameraSettings => super::olympus::olympus_camera_settings_tag_name(self.number),
             MakerNoteVendor::OlympusRawDevelopment => super::olympus::olympus_raw_development_tag_name(self.number),
@@ -398,7 +385,7 @@ impl MakerTag {
             MakerNoteVendor::Samsung => super::samsung::tag_description(self.number),
             MakerNoteVendor::Apple => super::apple::tag_description(self.number),
             MakerNoteVendor::Sigma => super::sigma::tag_description(self.number),
-            MakerNoteVendor::Pentax => super::pentax::tag_description(self.number),
+            MakerNoteVendor::Ricoh | MakerNoteVendor::Pentax => super::pentax::tag_description(self.number),
             MakerNoteVendor::OlympusEquipment => super::olympus::olympus_equipment_tag_description(self.number),
             MakerNoteVendor::OlympusCameraSettings => super::olympus::olympus_camera_settings_tag_description(self.number),
             MakerNoteVendor::OlympusRawDevelopment => super::olympus::olympus_raw_development_tag_description(self.number),
@@ -449,6 +436,7 @@ impl MakerNoteField {
             MakerNoteVendor::Samsung => super::samsung::display_value(tag.number, &value),
             MakerNoteVendor::Apple => super::apple::display_value(tag.number, &value),
             MakerNoteVendor::Sigma => super::sigma::display_value(tag.number, &value),
+            MakerNoteVendor::Ricoh | MakerNoteVendor::Pentax => super::pentax::display_value(tag.number, &value),
             MakerNoteVendor::OlympusEquipment => super::olympus::olympus_equipment_display_value(tag.number, &value),
             MakerNoteVendor::OlympusCameraSettings => super::olympus::olympus_camera_settings_display_value(tag.number, &value),
             MakerNoteVendor::OlympusRawDevelopment => super::olympus::olympus_raw_development_display_value(tag.number, &value),
