@@ -6,7 +6,6 @@
 use crate::endian::{BigEndian, Endian};
 use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor, StructuredMakerNoteData};
 use crate::make_note::maker_tag::d_undef_as_string;
-use crate::tiff::{TIFF_BE, TIFF_LE};
 use strum::{Display, FromRepr};
 
 /// Detect byte order from Olympus/OM System header.
@@ -15,12 +14,12 @@ pub(crate) fn detect_olympus_byte_order(data: &[u8]) -> bool {
     // Check for "OLYMPUS\0" header (8 bytes) + "II/MM" at bytes 8-9
     if data.len() >= 10 && (data.starts_with(b"OLYMPUS\x00") || data.starts_with(b"OLYMP\x00")) {
         let byte_order = BigEndian::loadu16(data, 8);
-        return byte_order == TIFF_LE;
+        return byte_order == crate::tiff::TIFF_LE;
     }
     // Check for "OM SYSTEM\0\0\0" header (12 bytes) + "II/MM" at bytes 12-13
     if data.len() >= 14 && data.starts_with(b"OM SYSTEM") {
         let byte_order = BigEndian::loadu16(data, 12);
-        return byte_order == TIFF_LE;
+        return byte_order == crate::tiff::TIFF_LE;
     }
     // Default to little-endian
     true

@@ -5,7 +5,6 @@
 
 use crate::endian::{BigEndian, Endian};
 use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor};
-use crate::tiff::{TIFF_BE, TIFF_LE};
 
 /// Detect byte order from Pentax/Ricoh header.
 /// Pentax uses "AOC\0" + "II/MM" or "RICOH\0" + "II/MM".
@@ -14,13 +13,13 @@ pub(crate) fn detect_pentax_byte_order(data: &[u8]) -> bool {
     if data.len() >= 6 && &data[0..4] == b"AOC\x00" {
         // "AOC\0" + "II/MM" at bytes 4-5
         let byte_order = BigEndian::loadu16(data, 4);
-        return byte_order == TIFF_LE;
+        return byte_order == crate::tiff::TIFF_LE;
     }
     // Check for "RICOH\0" header
     if data.len() >= 8 && &data[0..6] == b"RICOH\x00" {
         // "RICOH\0" + "II/MM" at bytes 6-7
         let byte_order = BigEndian::loadu16(data, 6);
-        return byte_order == TIFF_LE;
+        return byte_order == crate::tiff::TIFF_LE;
     }
     // Default to little-endian
     true
