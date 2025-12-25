@@ -89,6 +89,10 @@ pub enum MakerNoteVendor {
     /// Header: "SIGMA\0\0\0" or "FOVEON\0\0" (8 bytes)
     Sigma,
 
+    /// Pentax/Ricoh cameras
+    /// Header: "AOC\0" or no header, starts directly with IFD
+    Pentax,
+
     /// Olympus Equipment subdirectory (0x2010)
     OlympusEquipment,
 
@@ -125,6 +129,7 @@ impl fmt::Display for MakerNoteVendor {
             MakerNoteVendor::Samsung => write!(f, "Samsung"),
             MakerNoteVendor::Apple => write!(f, "Apple"),
             MakerNoteVendor::Sigma => write!(f, "Sigma"),
+            MakerNoteVendor::Pentax => write!(f, "Pentax"),
             // olympus specific
             MakerNoteVendor::OlympusEquipment => write!(f, "OlympusEquipment"),
             MakerNoteVendor::OlympusCameraSettings => write!(f, "OlympusCameraSettings"),
@@ -182,12 +187,18 @@ impl MakerNoteVendor {
         else if data.starts_with(b"SIGMA\x00") || data.starts_with(b"FOVEON\x00") {
             MakerNoteVendor::Sigma
         }
-        // Canon/Samsung: No header, detect from Make field
+        // Pentax/Ricoh: "AOC\0" or "RICOH\0" header
+        else if data.starts_with(b"AOC\x00") || data.starts_with(b"RICOH\x00") {
+            MakerNoteVendor::Pentax
+        }
+        // Canon/Samsung/Pentax/Ricoh: No header, detect from Make field
         else if let Some(make_str) = make {
             if make_str.starts_with("Canon") {
                 MakerNoteVendor::Canon
             } else if make_str.starts_with("SAMSUNG") {
                 MakerNoteVendor::Samsung
+            } else if make_str.starts_with("PENTAX") || make_str.starts_with("RICOH") {
+                MakerNoteVendor::Pentax
             } else {
                 MakerNoteVendor::Unknown
             }
@@ -213,6 +224,7 @@ impl MakerNoteVendor {
             MakerNoteVendor::Samsung => 0,    // No header, starts directly with IFD
             MakerNoteVendor::Apple => 14,     // "Apple iOS\0" (10) + version (2) + "II/MM" (2) = 14 bytes
             MakerNoteVendor::Sigma => 10,     // "SIGMA\0\0\0" or "FOVEON\0\0" (8) + version (2) = 10 bytes
+            MakerNoteVendor::Pentax => 8,     // "AOC\0" (4) + "II/MM" (2) + version (2) or "RICOH\0II" (8) = 8 bytes
             // Subdirectories don't have headers (they're already inside parsed data)
             MakerNoteVendor::OlympusEquipment
             | MakerNoteVendor::OlympusCameraSettings
@@ -252,12 +264,13 @@ impl MakerNoteVendor {
 
     pub const fn consider_tiff_offset(&self) -> bool {
         match self {
-            // Panasonic, Canon, Sony, Leica use TIFF-relative offsets
+            // Panasonic, Canon, Sony, Leica, Sigma use TIFF-relative offsets
             MakerNoteVendor::Panasonic | MakerNoteVendor::Canon | MakerNoteVendor::Sony |
             MakerNoteVendor::Leica | MakerNoteVendor::Sigma => true,
-            // Nikon, Olympus, OM System, Fujifilm, Samsung, Apple - use MakerNote-relative offsets
+            // Nikon, Olympus, OM System, Fujifilm, Samsung, Apple, Pentax - use MakerNote-relative offsets
             MakerNoteVendor::Nikon | MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem |
-            MakerNoteVendor::Fujifilm | MakerNoteVendor::Samsung | MakerNoteVendor::Apple => false,
+            MakerNoteVendor::Fujifilm | MakerNoteVendor::Samsung | MakerNoteVendor::Apple |
+            MakerNoteVendor::Pentax => false,
             // Olympus subdirectories use MakerNote-relative offsets (inherited from parent)
             MakerNoteVendor::OlympusEquipment
             | MakerNoteVendor::OlympusCameraSettings
@@ -270,6 +283,12 @@ impl MakerNoteVendor {
         }
     }
 
+    /// Some vendors use non-standard TIFF magic number in their TIFF-like header.
+    /// Pentax/Ricoh uses 0x0057 instead of standard 0x002A.
+    pub const fn has_nonstandard_tiff_magic(&self) -> bool {
+        matches!(self, MakerNoteVendor::Pentax)
+    }
+
     /// Returns whether this vendor already has a TIFF header after the proprietary header.
     ///
     /// If true, the data after proprietary header already contains a valid TIFF header,
@@ -278,6 +297,9 @@ impl MakerNoteVendor {
         match self {
             // Nikon Type 3 already has TIFF header after "Nikon\0" + version
             MakerNoteVendor::Nikon => true,
+            // Pentax/Ricoh has custom header without proper TIFF header
+            // "AOC\0" + "II/MM" + data or "RICOH\0II" + data
+            MakerNoteVendor::Pentax => false,
             // All other vendors either have no header or need a TIFF header added
             MakerNoteVendor::Panasonic | MakerNoteVendor::Canon | MakerNoteVendor::Sony |
             MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem | MakerNoteVendor::Fujifilm |
@@ -352,6 +374,7 @@ impl MakerTag {
             MakerNoteVendor::Samsung => super::samsung::tag_name(self.number),
             MakerNoteVendor::Apple => super::apple::tag_name(self.number),
             MakerNoteVendor::Sigma => super::sigma::tag_name(self.number),
+            MakerNoteVendor::Pentax => super::pentax::tag_name(self.number),
             MakerNoteVendor::OlympusEquipment => super::olympus::olympus_equipment_tag_name(self.number),
             MakerNoteVendor::OlympusCameraSettings => super::olympus::olympus_camera_settings_tag_name(self.number),
             MakerNoteVendor::OlympusRawDevelopment => super::olympus::olympus_raw_development_tag_name(self.number),
@@ -375,6 +398,7 @@ impl MakerTag {
             MakerNoteVendor::Samsung => super::samsung::tag_description(self.number),
             MakerNoteVendor::Apple => super::apple::tag_description(self.number),
             MakerNoteVendor::Sigma => super::sigma::tag_description(self.number),
+            MakerNoteVendor::Pentax => super::pentax::tag_description(self.number),
             MakerNoteVendor::OlympusEquipment => super::olympus::olympus_equipment_tag_description(self.number),
             MakerNoteVendor::OlympusCameraSettings => super::olympus::olympus_camera_settings_tag_description(self.number),
             MakerNoteVendor::OlympusRawDevelopment => super::olympus::olympus_raw_development_tag_description(self.number),

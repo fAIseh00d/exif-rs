@@ -60,6 +60,7 @@ pub mod olympus;
 pub mod samsung;
 pub mod apple;
 pub mod sigma;
+pub mod pentax;
 
 /// Parse MakerNote data with offset correction.
 ///
@@ -149,10 +150,18 @@ pub fn parse_make_note_with_vendor(
                 // Apple: Detect byte order from header
                 Some(apple::detect_apple_byte_order(data))
             }
+            MakerNoteVendor::Pentax => {
+                // Pentax/Ricoh: Detect byte order from header ("II" or "MM")
+                Some(pentax::detect_pentax_byte_order(data))
+            }
+            MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem => {
+                // Olympus/OM System: Detect byte order from header ("II" or "MM")
+                Some(olympus::detect_olympus_byte_order(data))
+            }
             _ => {
                 // Default for other vendors
                 None
-                
+
             }
         }
     } else {
@@ -277,7 +286,8 @@ impl MakerNoteParser {
     fn parse_header<E>(&mut self, data: &[u8])
                        -> Result<(), Error> where E: Endian {
         // Parse the rest of the header (42 and the IFD offset).
-        if E::loadu16(data, 2) != TIFF_FORTY_TWO {
+        // Some vendors (Pentax/Ricoh) use non-standard magic number (0x0057 instead of 0x002A)
+        if !self.vendor.has_nonstandard_tiff_magic() && E::loadu16(data, 2) != TIFF_FORTY_TWO {
             return Err(Error::InvalidFormat("Invalid forty two"));
         }
         let ifd_offset = E::loadu32(data, 4) as usize;

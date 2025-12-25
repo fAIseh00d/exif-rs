@@ -3,7 +3,9 @@
 // Based on iPhoto information with iPhone 17 Pro
 //
 
+use crate::endian::{BigEndian, Endian};
 use crate::make_note::maker_tag::{MakerTag, MakerNoteVendor, StructuredMakerNoteData};
+use crate::tiff::{TIFF_BE, TIFF_LE};
 use crate::Value;
 
 /// Apple Acceleration Vector (3D acceleration in units of g)
@@ -69,13 +71,11 @@ pub(crate) fn detect_apple_byte_order(data: &[u8]) -> bool {
     // Check byte order marker at offset 12-13
     // "II" = 0x4949 = little-endian
     // "MM" = 0x4D4D = big-endian
-    if data[12] == b'I' && data[13] == b'I' {
-        true // Little-endian
-    } else if data[12] == b'M' && data[13] == b'M' {
-        false // Big-endian
-    } else {
-        // Invalid byte order marker, default to big-endian (most common for Apple)
-        false
+    let byte_order = BigEndian::loadu16(data, 12);
+    match byte_order {
+        TIFF_LE => true,  // Little-endian
+        TIFF_BE => false, // Big-endian
+        _ => false,       // Invalid, default to big-endian (most common for Apple)
     }
 }
 
