@@ -110,7 +110,7 @@ macro_rules! generate_maker_tags {
         }
 
         /// Display value for a tag. Returns None to use default display.
-        #[allow(unused_variables)]
+        #[allow(unused_variables, dead_code)]
         pub(crate) fn display_value(number: u16, value: &crate::value::Value) -> Option<String> {
             match number {
                 $(
