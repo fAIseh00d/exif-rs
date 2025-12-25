@@ -29,7 +29,7 @@ use std::io::{BufRead, ErrorKind};
 use crate::error::Error;
 use crate::util::{read8, read16};
 
-mod marker {
+pub(crate) mod marker {
     // The first byte of a marker.
     pub const P:    u8 = 0xff;
     // Marker codes.
@@ -41,6 +41,8 @@ mod marker {
     pub const EOI:  u8 = 0xd9;
     pub const SOS:  u8 = 0xda;
     pub const APP1: u8 = 0xe1;
+    #[cfg(feature = "mpf")]
+    pub const APP2: u8 = 0xe2;
 }
 
 // SOI marker as the JPEG header.

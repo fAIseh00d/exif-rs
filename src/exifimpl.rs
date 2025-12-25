@@ -28,8 +28,10 @@ use std::collections::HashMap;
 
 use crate::tag::Tag;
 use crate::tiff::{Field, IfdEntry, In, ProvideUnit};
+use crate::subimg::EmbeddedSubImage;
 #[cfg(feature = "make_note")]
 use crate::make_note::maker_tag::{MakerNoteField, MakerNoteVendor, MakerTag};
+use crate::value::Value;
 
 /// A struct that holds the parsed Exif attributes.
 ///
@@ -172,6 +174,66 @@ impl Exif {
     pub fn get_field(&self, tag: Tag, ifd_num: In) -> Option<&Field> {
         self.entry_map.get(&(ifd_num, tag))
             .map(|&i| self.entries[i].ref_field(&self.buf, self.little_endian))
+    }
+
+    /// Returns information about embedded sub-images (thumbnails and previews).
+    ///
+    /// This method returns metadata for sub-images embedded in the Exif data:
+    /// - IFD1 thumbnail (JPEG format, typically 10-20 KB)
+    /// - MakerNote preview images (if `make_note` feature is enabled and vendor supports it)
+    ///
+    /// Note: MPF (Multi-Picture Format) images are not included here because they are
+    /// stored in separate APP2 segments. Use `get_mpf_info()` to access MPF images.
+    ///
+    /// The returned offsets are relative to the start of the TIFF data (Exif segment),
+    /// not the file start. For JPEG files, you need to account for the APP1 marker offset.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use exif::Reader;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let file = std::fs::File::open("image.jpg")?;
+    /// let exif = Reader::new().read_from_container(
+    ///     &mut std::io::BufReader::new(&file))?;
+    ///
+    /// for img_info in exif.thumbnails() {
+    ///     println!("Source: {}, Size: {} bytes, Offset: {}",
+    ///              img_info.source.name(), img_info.length, img_info.offset);
+    /// }
+    /// # Ok(()) }
+    /// ```
+    pub fn thumbnails(&self) -> Vec<EmbeddedSubImage> {
+        let mut images = Vec::new();
+
+        // Try to get IFD1 thumbnail
+        if let (Some(offset_field), Some(length_field)) = (
+            self.get_field(Tag::JPEGInterchangeFormat, In::THUMBNAIL),
+            self.get_field(Tag::JPEGInterchangeFormatLength, In::THUMBNAIL),
+        ) {
+            if let (Value::Long(ref offset_val), Value::Long(ref length_val)) =
+                (&offset_field.value, &length_field.value)
+            {
+                if !offset_val.is_empty() && !length_val.is_empty() {
+                    let offset = offset_val[0] as u64;
+                    let length = length_val[0];
+                    if length > 0 {
+                        images.push(EmbeddedSubImage::new_thumbnail(length, offset));
+                    }
+                }
+            }
+        }
+
+        // Try to get MakerNote preview images
+        #[cfg(feature = "make_note")]
+        {
+            let maker_note_images = crate::subimg::extract_maker_note_preview_info(
+                &self.maker_note_fields,
+                &self.maker_note_vendor,
+            );
+            images.extend(maker_note_images);
+        }
+
+        images
     }
 
     /// Returns the detected MakerNote vendor.
