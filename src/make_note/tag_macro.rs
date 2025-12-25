@@ -110,7 +110,8 @@ macro_rules! generate_maker_tags {
         }
 
         /// Display value for a tag. Returns None to use default display.
-        #[allow(unused_variables, dead_code)]
+        // If warn with unsued or dead_code, some of vendor not cover all of MakerNoteField trait
+        #[allow(unused_variables)]
         pub(crate) fn display_value(number: u16, value: &crate::value::Value) -> Option<String> {
             match number {
                 $(

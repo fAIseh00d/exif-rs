@@ -146,17 +146,12 @@ pub fn parse_make_note_with_vendor(
                 // Samsung: Auto-detect byte order from IFD tag structure
                 Some(samsung::detect_samsung_byte_order(parse_data))
             }
-            MakerNoteVendor::Apple => {
-                // Apple: Detect byte order from header
-                Some(apple::detect_apple_byte_order(data))
-            }
-            MakerNoteVendor::Pentax => {
-                // Pentax/Ricoh: Detect byte order from header ("II" or "MM")
-                Some(pentax::detect_pentax_byte_order(data))
-            }
+            MakerNoteVendor::Apple | MakerNoteVendor::Pentax | MakerNoteVendor::Ricoh |
             MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem => {
+                // Apple: Detect byte order from header
+                // Pentax/Ricoh: Detect byte order from header ("II" or "MM")
                 // Olympus/OM System: Detect byte order from header ("II" or "MM")
-                Some(olympus::detect_olympus_byte_order(data))
+                detect_makernote_byte_order(data)
             }
             _ => {
                 // Default for other vendors
@@ -469,6 +464,40 @@ impl MakerNoteParser {
     }
 }
 
+#[inline]
+pub(crate) fn detect_makernote_byte_order(data: &[u8]) -> Option<bool> {
+    const TABLE: &[(&[u8], usize, Option<bool>)] = &[
+        // Ricoh / Pentax / Olympus
+        // (b"AOC\x00",        4,  None), // todo - Need more research
+        (b"RICOH\x00",      6,  None),
+        (b"PENTAX\x00",     8,  None),
+        (b"OLYMPUS\x00",    8,  None),
+        (b"OLYMP\x00",      8,  None),
+        (b"OM SYSTEM",     12,  None),
+
+        // Apple: most of case BE
+        (b"Apple iOS\x00", 12,  Some(false)),
+    ];
+
+    for &(magic, offset, fixed) in TABLE {
+        if !data.starts_with(magic) {
+            continue;
+        }
+
+        if data.len() < offset + 2 {
+            return None;
+        }
+
+        let v = BigEndian::loadu16(data, offset);
+        return match v {
+            crate::tiff::TIFF_LE => Some(true),
+            crate::tiff::TIFF_BE => Some(false),
+            _ => fixed,
+        };
+    }
+
+    None
+}
 #[cfg(test)]
 mod tests {
     use super::*;
