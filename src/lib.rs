@@ -107,7 +107,7 @@ pub use make_note::{apple, canon, fujifilm, nikon, olympus, panasonic};
 #[cfg(feature = "make_note")]
 pub use make_note::{samsung, sigma, sony};
 #[cfg(feature = "mpf")]
-pub use mpf::{get_mpf_info, MpImage, MpfInfo};
+pub use mpf::mpf_tag::{MpfTag, MpfField, MpImageType, MpImageAttr};
 
 /// The interfaces in this module are experimental and unstable.
 pub mod experimental {

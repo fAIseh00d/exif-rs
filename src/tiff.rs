@@ -54,8 +54,8 @@ pub struct IfdEntry {
 
 impl IfdEntry {
     /// Creates a new IfdEntry from a Field.
-    /// This is mainly used internally for MakerNote parsing.
-    #[cfg(feature = "make_note")]
+    /// This is mainly used internally for MakerNote and MPF parsing.
+    #[cfg(any(feature = "make_note"))]
     pub(crate) fn from_field(field: Field) -> Self {
         IfdEntry {
             field: MutOnce::from(field),
@@ -156,6 +156,8 @@ pub struct In(pub u16);
 impl In {
     pub const PRIMARY: In = In(0);
     pub const THUMBNAIL: In = In(1);
+    #[cfg(feature = "mpf")]
+    pub const MPF: In = In(2);
 
     /// Returns the IFD number.
     #[inline]

@@ -39,6 +39,9 @@ use crate::value::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum EmbeddedSubImageSource {
+    /// TIFF original primary image
+    Primary = 0,
+
     /// IFD1 thumbnail image (always available)
     Thumbnail = 1,
 
@@ -63,6 +66,7 @@ impl EmbeddedSubImageSource {
     /// Get a human-readable name for the image source
     pub fn name(&self) -> &'static str {
         match self {
+            EmbeddedSubImageSource::Primary => "Primary",
             EmbeddedSubImageSource::Thumbnail => "Thumbnail",
             #[cfg(feature = "mpf")]
             EmbeddedSubImageSource::Mpf => "MPF",
@@ -94,6 +98,15 @@ pub struct EmbeddedSubImage {
 }
 
 impl EmbeddedSubImage {
+    /// Create a new EmbeddedSubImage for a primary image
+    pub fn new_primary(length: u32, offset: u64) -> Self {
+        Self {
+            source: EmbeddedSubImageSource::Primary,
+            length,
+            offset,
+        }
+    }
+
     /// Create a new EmbeddedSubImage for a thumbnail
     pub fn new_thumbnail(length: u32, offset: u64) -> Self {
         Self {

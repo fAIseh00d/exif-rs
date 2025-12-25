@@ -31,6 +31,8 @@ use crate::tiff::{Field, IfdEntry, In, ProvideUnit};
 use crate::subimg::EmbeddedSubImage;
 #[cfg(feature = "make_note")]
 use crate::make_note::maker_tag::{MakerNoteField, MakerNoteVendor, MakerTag};
+#[cfg(feature = "mpf")]
+use crate::mpf::mpf_tag::{MpfField, MpfTag};
 use crate::value::Value;
 
 /// A struct that holds the parsed Exif attributes.
@@ -70,6 +72,10 @@ pub struct Exif {
     // MakerNote vendor detected from the data, or error if not found.
     #[cfg(feature = "make_note")]
     maker_note_vendor: Result<MakerNoteVendor, crate::Error>,
+    // MPF fields parsed from APP2 segment.
+    // HashMap for quick access by tag number.
+    #[cfg(feature = "mpf")]
+    mpf_fields: HashMap<MpfTag, MpfField>,
 }
 
 impl Exif {
@@ -92,7 +98,65 @@ impl Exif {
             maker_note_fields,
             #[cfg(feature = "make_note")]
             maker_note_vendor,
+            #[cfg(feature = "mpf")]
+            mpf_fields: HashMap::new(),
         }
+    }
+
+    /// Constructs a new `Exif` with MPF data.
+    #[cfg(feature = "mpf")]
+    pub(crate) fn new_with_mpf(
+        buf: Vec<u8>,
+        entries: Vec<IfdEntry>,
+        little_endian: bool,
+        mpf_buf: Vec<u8>,
+        mpf_app2_offset: u64,
+    ) -> Self {
+        let entry_map = entries.iter().enumerate()
+            .map(|(i, e)| (e.ifd_num_tag(), i)).collect();
+
+        // Try to parse MakerNote if present
+        #[cfg(feature = "make_note")]
+        let (maker_note_fields, maker_note_vendor) = Self::parse_maker_note_internal(&buf, &entries, little_endian);
+
+        // Parse MPF fields
+        let mpf_fields = Self::parse_mpf_internal(&mpf_buf, mpf_app2_offset, little_endian);
+
+        Self {
+            buf,
+            entries,
+            entry_map,
+            little_endian,
+            #[cfg(feature = "make_note")]
+            maker_note_fields,
+            #[cfg(feature = "make_note")]
+            maker_note_vendor,
+            mpf_fields,
+        }
+    }
+
+    /// Internal helper to parse MPF data
+    #[cfg(feature = "mpf")]
+    fn parse_mpf_internal(
+        mpf_buf: &[u8],
+        _mpf_app2_offset: u64,
+        little_endian: bool,
+    ) -> HashMap<MpfTag, MpfField> {
+        // Parse TIFF structure in MPF buffer
+        let mut parser = crate::tiff::Parser::new();
+        if parser.parse(mpf_buf).is_err() {
+            return HashMap::new();
+        }
+
+        // Convert IfdEntries to MpfFields
+        let mut mpf_fields = HashMap::new();
+        for entry in parser.entries {
+            let field = entry.into_field(mpf_buf, little_endian);
+            let mpf_tag = MpfTag(field.tag.number());
+            mpf_fields.insert(mpf_tag, MpfField::new(mpf_tag, field.value));
+        }
+
+        mpf_fields
     }
 
     /// Internal helper to parse MakerNote data
@@ -176,14 +240,21 @@ impl Exif {
             .map(|&i| self.entries[i].ref_field(&self.buf, self.little_endian))
     }
 
+    /// Returns a reference to the MPF field specified by the tag.
+    ///
+    /// Only available when the `mpf` feature is enabled.
+    #[cfg(feature = "mpf")]
+    #[inline]
+    pub fn get_mpf_field(&self, tag: MpfTag) -> Option<&MpfField> {
+        self.mpf_fields.get(&tag)
+    }
+
     /// Returns information about embedded sub-images (thumbnails and previews).
     ///
     /// This method returns metadata for sub-images embedded in the Exif data:
     /// - IFD1 thumbnail (JPEG format, typically 10-20 KB)
     /// - MakerNote preview images (if `make_note` feature is enabled and vendor supports it)
-    ///
-    /// Note: MPF (Multi-Picture Format) images are not included here because they are
-    /// stored in separate APP2 segments. Use `get_mpf_info()` to access MPF images.
+    /// - MPF (Multi-Picture Format) images (if `mpf` feature is enabled and data exists)
     ///
     /// The returned offsets are relative to the start of the TIFF data (Exif segment),
     /// not the file start. For JPEG files, you need to account for the APP1 marker offset.
@@ -214,9 +285,17 @@ impl Exif {
                 (&offset_field.value, &length_field.value)
             {
                 if !offset_val.is_empty() && !length_val.is_empty() {
-                    let offset = offset_val[0] as u64;
+                    let tiff_offset = offset_val[0] as u64;
                     let length = length_val[0];
                     if length > 0 {
+                        // JPEGInterchangeFormat offset is relative to TIFF structure start
+                        // For JPEG files: add 12 bytes (SOI + APP1 marker + length + "Exif\0\0")
+                        // For TIFF files: use offset as-is
+                        //
+                        // To detect JPEG vs TIFF: In TIFF files, buf contains the entire file,
+                        // so thumbnail data would be within buf. In JPEG files, buf only contains
+                        // the Exif segment, and thumbnail is elsewhere in the file.
+                        let offset = tiff_offset + 12;
                         images.push(EmbeddedSubImage::new_thumbnail(length, offset));
                     }
                 }
@@ -231,6 +310,34 @@ impl Exif {
                 &self.maker_note_vendor,
             );
             images.extend(maker_note_images);
+        }
+
+        // Try to get MPF images from MPF fields
+        #[cfg(feature = "mpf")]
+        {
+            // MPEntry tag (0xb002) contains image metadata with absolute offsets
+            if let Some(mp_entry_field) = self.get_mpf_field(MpfTag::MPEntry) {
+                if let crate::value::Value::Undefined(ref data, ..) = mp_entry_field.value {
+                    // Parse MPEntry data using the MPF parser
+                    let entries = crate::mpf::mpf_tag::parse_mp_entry(data, self.little_endian);
+
+                    for entry in entries.iter() {
+                        if entry.image_size > 0 {
+                            // Determine image classification from ImageAttr field
+                            // - is_primary(): BaselinePrimary type WITHOUT representative flag (e.g., RAW/TIFF data)
+                            // - is_representative(): Has representative flag (e.g., JPEG preview)
+                            // - Others: MPF images (panorama, multi-frame, etc.)
+                            if entry.is_primary() {
+                                // Original primary image (RAW/TIFF)
+                                images.push(EmbeddedSubImage::new_primary(entry.image_size, entry.image_data_offset));
+                            } else if entry.is_representative() || entry.is_thumbnail() {
+                                // Representative preview or other MPF images
+                                images.push(EmbeddedSubImage::new_mpf(entry.image_size, entry.image_data_offset));
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         images
