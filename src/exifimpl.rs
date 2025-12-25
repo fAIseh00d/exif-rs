@@ -327,10 +327,7 @@ impl Exif {
                             // - is_primary(): BaselinePrimary type WITHOUT representative flag (e.g., RAW/TIFF data)
                             // - is_representative(): Has representative flag (e.g., JPEG preview)
                             // - Others: MPF images (panorama, multi-frame, etc.)
-                            if entry.is_primary() {
-                                // Original primary image (RAW/TIFF)
-                                images.push(EmbeddedSubImage::new_primary(entry.image_size, entry.image_data_offset));
-                            } else if entry.is_representative() || entry.is_thumbnail() {
+                            if !entry.is_primary() && (entry.is_representative() || entry.is_thumbnail()) {
                                 // Representative preview or other MPF images
                                 images.push(EmbeddedSubImage::new_mpf(entry.image_size, entry.image_data_offset));
                             }
@@ -342,6 +339,56 @@ impl Exif {
 
         images
     }
+
+    /// Returns metadata for the primary image described in the MPF (APP2) segment.
+    ///
+    /// This method extracts information about the primary image entry from the
+    /// MPF (Multi-Picture Format) data, if present. The MPF `MPEntry` tag contains
+    /// image metadata including absolute offsets and lengths for each embedded image.
+    ///
+    /// The returned image corresponds to the MPF entry marked as the primary image.
+    /// Note that this is distinct from the Exif primary image (APP1) and represents
+    /// the MPF-defined main image when multiple images are present.
+    ///
+    /// The returned offset is relative to the start of the JPEG file (SOI),
+    /// as defined by the MPF specification.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use exif::Reader;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let file = std::fs::File::open("image.jpg")?;
+    /// let exif = Reader::new().read_from_container(
+    ///     &mut std::io::BufReader::new(&file))?;
+    ///
+    /// if let Some(img) = exif.primary_image() {
+    ///     println!(
+    ///         "Primary MPF image: size={} bytes, offset={}",
+    ///         img.length, img.offset
+    ///     );
+    /// }
+    /// # Ok(()) }
+    /// ```
+    #[cfg(feature = "mpf")]
+    pub fn primary_image(&self) -> Option<EmbeddedSubImage> {
+        self.get_mpf_field(MpfTag::MPEntry)
+            .and_then(|field| {
+                if let crate::value::Value::Undefined(ref data, ..) = field.value {
+                    crate::mpf::mpf_tag::parse_mp_entry(data, self.little_endian)
+                        .iter()
+                        .find(|e| e.is_primary())
+                        .map(|e| {
+                            EmbeddedSubImage::new_primary(
+                                e.image_size,
+                                e.image_data_offset,
+                            )
+                        })
+                } else {
+                    None
+                }
+            })
+    }
+
 
     /// Returns the detected MakerNote vendor.
     ///
