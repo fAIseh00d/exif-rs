@@ -185,6 +185,13 @@ impl MakerNoteVendor {
                 MakerNoteVendor::Samsung
             } else if make_str.starts_with("PENTAX") || make_str.starts_with("RICOH") {
                 MakerNoteVendor::Pentax
+            } else if make_str.starts_with("SONY") {
+                // Sony's "SONY DSC \0\0\0" signature is on DSC-series JPEGs.
+                // An Alpha's raw carries a BARE IFD with no signature at all,
+                // so signature matching alone leaves every ARW as `Unknown` --
+                // which assumes a TIFF header and fails on the IFD's entry
+                // count with "Invalid TIFF byte order".
+                MakerNoteVendor::Sony
             } else {
                 MakerNoteVendor::Unknown
             }
@@ -193,6 +200,29 @@ impl MakerNoteVendor {
         }
     }
 
+
+    /// The proprietary header size **for this actual data**.
+    ///
+    /// A vendor's signature is not always present: Sony writes
+    /// `"SONY DSC \0\0\0"` in DSC-series JPEGs and nothing at all in an
+    /// Alpha's raw, where the MakerNote is a bare IFD. Skipping the nominal
+    /// header there would eat the first entry.
+    pub fn header_size_in(&self, data: &[u8]) -> usize {
+        match self {
+            MakerNoteVendor::Sony if !data.starts_with(b"SONY") => 0,
+            _ => self.header_size(),
+        }
+    }
+
+    /// The offset correction **for this actual data**, the counterpart to
+    /// [`Self::header_size_in`].
+    ///
+    /// Kept beside it so the two cannot drift: the correction is only ever the
+    /// header that was actually skipped, and computing it from the nominal
+    /// size would be wrong for exactly the files `header_size_in` exists for.
+    pub fn offset_correction_in(&self, data: &[u8]) -> i32 {
+        if self.has_tiff_header() { 0 } else { self.header_size_in(data) as i32 }
+    }
 
     /// Returns the proprietary header size (bytes to skip before IFD).
     ///

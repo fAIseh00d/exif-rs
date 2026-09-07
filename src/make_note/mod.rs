@@ -131,7 +131,7 @@ pub fn parse_make_note_with_vendor(
 
     // Step 1: Detect vendor from header and Make field
     let vendor = MakerNoteVendor::from_header(data, make);
-    let header_size = vendor.header_size();
+    let header_size = vendor.header_size_in(data);
 
     // Step 2: Skip proprietary header
     if data.len() < header_size {
@@ -165,7 +165,7 @@ pub fn parse_make_note_with_vendor(
     };
 
     // Step 4: Parse with offset correction
-    let offset_correction = vendor.offset_correction();
+    let offset_correction = vendor.offset_correction_in(data);
 
     let consider_tiff_offset = vendor.consider_tiff_offset();
 
