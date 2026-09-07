@@ -35,6 +35,15 @@ use crate::make_note::maker_tag::{MakerNoteField, MakerNoteVendor, MakerTag};
 use crate::mpf::mpf_tag::{MpfField, MpfTag};
 use crate::value::Value;
 
+/// Where the TIFF header sits in an ordinary JPEG: SOI (2) + APP1 marker (2) +
+/// length (2) + `"Exif\0\0"` (6).
+///
+/// **An assumption, and a documented one**: it holds when APP1 is the first
+/// segment, which is the overwhelming majority, but a file with a JFIF APP0
+/// ahead of it puts the header further in. Tracking the segment's real
+/// position through the JPEG reader is the proper fix.
+pub(crate) const JPEG_TIFF_BASE: u64 = 12;
+
 /// A struct that holds the parsed Exif attributes.
 ///
 /// # Examples
@@ -65,6 +74,15 @@ pub struct Exif {
     entry_map: HashMap<(In, Tag), usize>,
     // True if the TIFF data is little endian.
     little_endian: bool,
+    // Where this TIFF header sits IN THE FILE.
+    //
+    // Every offset inside a TIFF is relative to its header, and that header is
+    // not always at the start of the file: it is the file itself for a TIFF or
+    // a raw, 12 bytes in for an ordinary JPEG (SOI + APP1 marker + length +
+    // "Exif\0\0"), and further still for a RAF, whose Exif belongs to a JPEG
+    // embedded at some offset of its own. Without it an offset-valued tag can
+    // only be reported relative to nothing.
+    tiff_base: u64,
     // MakerNote fields parsed by vendor-specific parser.
     // HashMap for quick access by (vendor, tag_number).
     #[cfg(feature = "make_note")]
@@ -82,6 +100,12 @@ impl Exif {
     /// Constructs a new `Exif`.
     pub(crate) fn new(buf: Vec<u8>,
                       entries: Vec<IfdEntry>, little_endian: bool) -> Self {
+        Self::new_at(buf, entries, little_endian, 0)
+    }
+
+    /// As [`Self::new`], with the file offset of the TIFF header.
+    pub(crate) fn new_at(buf: Vec<u8>, entries: Vec<IfdEntry>,
+                         little_endian: bool, tiff_base: u64) -> Self {
         let entry_map = entries.iter().enumerate()
             .map(|(i, e)| (e.ifd_num_tag(), i)).collect();
 
@@ -94,6 +118,7 @@ impl Exif {
             entries: entries,
             entry_map: entry_map,
             little_endian: little_endian,
+            tiff_base,
             #[cfg(feature = "make_note")]
             maker_note_fields,
             #[cfg(feature = "make_note")]
@@ -101,6 +126,22 @@ impl Exif {
             #[cfg(feature = "mpf")]
             mpf_fields: HashMap::new(),
         }
+    }
+
+    /// Where an offset stated INSIDE the TIFF lands in the file.
+    ///
+    /// Offsets in `JPEGInterchangeFormat`, `StripOffsets`, `PreviewImageStart`
+    /// and friends are all relative to the TIFF header, so a caller that wants
+    /// to seek to one has to be told where that header is.
+    #[must_use]
+    pub fn file_offset(&self, tiff_offset: u64) -> u64 {
+        self.tiff_base.saturating_add(tiff_offset)
+    }
+
+    /// The file offset of the TIFF header these fields are relative to.
+    #[must_use]
+    pub fn tiff_base(&self) -> u64 {
+        self.tiff_base
     }
 
     /// Constructs a new `Exif` with MPF data.
@@ -111,6 +152,7 @@ impl Exif {
         little_endian: bool,
         mpf_buf: Vec<u8>,
         mpf_app2_offset: u64,
+        tiff_base: u64,
     ) -> Self {
         let entry_map = entries.iter().enumerate()
             .map(|(i, e)| (e.ifd_num_tag(), i)).collect();
@@ -127,6 +169,7 @@ impl Exif {
             entries,
             entry_map,
             little_endian,
+            tiff_base,
             #[cfg(feature = "make_note")]
             maker_note_fields,
             #[cfg(feature = "make_note")]
@@ -301,7 +344,7 @@ impl Exif {
                         // To detect JPEG vs TIFF: In TIFF files, buf contains the entire file,
                         // so thumbnail data would be within buf. In JPEG files, buf only contains
                         // the Exif segment, and thumbnail is elsewhere in the file.
-                        let offset = tiff_offset + 12;
+                        let offset = self.file_offset(tiff_offset);
                         images.push(EmbeddedSubImage::new_thumbnail(length, offset));
                     }
                 }
@@ -468,6 +511,15 @@ mod tests {
     use std::io::BufReader;
     use crate::reader::Reader;
     use crate::value::Value;
+
+/// Where the TIFF header sits in an ordinary JPEG: SOI (2) + APP1 marker (2) +
+/// length (2) + `"Exif\0\0"` (6).
+///
+/// **An assumption, and a documented one**: it holds when APP1 is the first
+/// segment, which is the overwhelming majority, but a file with a JFIF APP0
+/// ahead of it puts the header further in. Tracking the segment's real
+/// position through the JPEG reader is the proper fix.
+pub(crate) const JPEG_TIFF_BASE: u64 = 12;
     use super::*;
 
     #[test]

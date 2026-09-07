@@ -72,6 +72,19 @@ pub fn is_raf(buf: &[u8]) -> bool {
     buf.starts_with(RAF_MAGIC)
 }
 
+/// A RAF, as far as the Exif reader is concerned: the Exif of its embedded
+/// JPEG, where in the file that JPEG starts, and what the RAF itself says
+/// about the raw image.
+#[derive(Debug)]
+pub(crate) struct RafContents {
+    pub exif: Vec<u8>,
+    /// File offset of the embedded JPEG — **every offset in `exif` is relative
+    /// to a TIFF header inside that JPEG**, so without this they point into
+    /// nothing.
+    pub jpeg_offset: u64,
+    pub raw_image: Option<RafRawImage>,
+}
+
 /// What a RAF states about its raw image, as opposed to its embedded JPEG.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RafRawImage {
@@ -117,8 +130,7 @@ fn raw_image_from(len: u32, whole: &mut impl io::Read) -> Option<RafRawImage> {
 /// about its RAW image — which the embedded JPEG's own Exif cannot.
 ///
 /// The reader is expected to be positioned at the start of the file.
-pub(crate) fn get_exif_and_raw_image<R>(reader: &mut R)
-    -> Result<(Vec<u8>, Option<RafRawImage>), Error>
+pub(crate) fn get_exif_and_raw_image<R>(reader: &mut R) -> Result<RafContents, Error>
 where R: io::BufRead + io::Seek {
     let mut header = [0u8; HEADER_LEN];
     reader.read_exact(&mut header)
@@ -155,7 +167,11 @@ where R: io::BufRead + io::Seek {
     let mut jpeg = vec![0u8; length as usize];
     reader.read_exact(&mut jpeg)
         .map_err(|_| Error::InvalidFormat("Truncated RAF embedded JPEG"))?;
-    Ok((crate::jpeg::get_exif_attr(&mut io::Cursor::new(jpeg))?, raw_image))
+    Ok(RafContents {
+        exif: crate::jpeg::get_exif_attr(&mut io::Cursor::new(jpeg))?,
+        jpeg_offset: u64::from(offset),
+        raw_image,
+    })
 }
 
 #[cfg(test)]
