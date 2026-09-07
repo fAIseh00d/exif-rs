@@ -58,6 +58,10 @@ pub(crate) const ORF_RS: u16 = 0x5352;
 /// Panasonic RW2/RAW (`IIU\0`) — version word 85.
 pub(crate) const RW2_EIGHTY_FIVE: u16 = 0x0055;
 
+/// How many `SubIFDs` pointers are followed. A DNG has one and a NEF two;
+/// the cap is a bound on a list the file controls, not a limit anyone meets.
+const MAX_SUB_IMAGES: usize = 8;
+
 /// The largest RW2 IFD0 tag number worth capturing (`0x0017`, ISO).
 const RW2_TAG_MAX: usize = 0x17;
 /// Panasonic's IFD0 tags. A RW2 carries NO `ImageWidth`/`PixelXDimension` and
@@ -85,7 +89,7 @@ pub struct IfdEntry {
 impl IfdEntry {
     /// Creates a new IfdEntry from a Field.
     /// This is mainly used internally for MakerNote and MPF parsing.
-    #[cfg(any(feature = "make_note"))]
+    #[cfg(feature = "make_note")]
     pub(crate) fn from_field(field: Field) -> Self {
         IfdEntry {
             field: MutOnce::from(field),
@@ -202,6 +206,24 @@ impl In {
     pub const THUMBNAIL: In = In(1);
     #[cfg(feature = "mpf")]
     pub const MPF: In = In(2);
+
+    /// The first sub-image IFD (`SubIFDs`, tag 0x014A); the next is
+    /// `In(SUB_IMAGE.0 + 1)` and so on.
+    ///
+    /// **Deliberately above every other allocation.** The chained IFDs take
+    /// 0..=7 (the chain is capped at 8), and `MPF` squats on 2 — so numbering
+    /// sub-images from 0 upward would collide with both. 16 leaves the chain
+    /// its whole range and stays clear of `MPF`.
+    ///
+    /// A DNG's IFD0 is a THUMBNAIL by specification and its real images are
+    /// here, which is why `get_field(Tag::ImageWidth, In::PRIMARY)` on a DNG
+    /// answers something like 256x171 and is not wrong to do so. For the
+    /// dimensions a converter would output, read `DefaultCropSize` from the
+    /// sub-image where the format defines it (DNG), or the vendor's own crop
+    /// tags from the MakerNote. **Which of those wins is the CONSUMER's
+    /// decision** — it differs per vendor and per generation — so this crate
+    /// exposes them and picks none.
+    pub const SUB_IMAGE: In = In(16);
 
     /// Returns the IFD number.
     #[inline]
@@ -366,6 +388,25 @@ impl Parser {
             // No infinite recursion will occur because the context is not
             // recursively defined.
             let tag = Tag(ctx, tag);
+            // Sub-images are a LIST of pointers, not one, and they are
+            // ordinary TIFF IFDs rather than a different context — so they
+            // get IFD NUMBERS of their own instead of a child context.
+            if tag == Tag::SubIFDs && ifd_num == 0 {
+                let mut ptr = val;
+                IfdEntry::parse_value::<E>(&mut ptr, data);
+                // The same defence the IFD chain has: a pointer list is
+                // attacker-controlled, so it is bounded rather than trusted.
+                for i in 0..MAX_SUB_IMAGES {
+                    let Some(ofs) = ptr.get_uint(i) else { break };
+                    let sub = In::SUB_IMAGE.0 + u16::try_from(i).unwrap_or(0);
+                    self.parse_ifd::<E>(data, ofs as usize, Context::Tiff, sub,
+                                        base_offset)
+                        .map(|_next| ())
+                        .or_else(|e| self.check_error(e))?;
+                }
+                continue;
+            }
+
             let child_ctx = match tag {
                 Tag::ExifIFDPointer => Context::Exif,
                 Tag::GPSInfoIFDPointer => Context::Gps,
@@ -447,8 +488,16 @@ impl Parser {
     ///   (160, 200, 400, 100, 125).
     ///
     /// Written as `In::PRIMARY` entries so an ordinary `get_field` finds them,
-    /// and only when the header said RW2 — tag 4 in a real TIFF is
-    /// `FillOrder`, so doing this unconditionally would corrupt every TIFF.
+    /// and **only when the header said RW2**. Tags 2-7 are unassigned in
+    /// baseline TIFF, so nothing standard is being overwritten — but they are
+    /// free for any other dialect to use for anything, so the version word
+    /// gates it rather than the numbers being "probably safe".
+    ///
+    /// Naming these as Panasonic tags instead was considered and does not
+    /// work: this crate names a tag by `(Context, number)` with no room for a
+    /// dialect, so `Tag(Tiff, 4)` would be labelled `SensorTopBorder` in every
+    /// TIFF ever read. Deriving the standard tags, gated, is the more honest
+    /// of the two options actually available.
     fn synthesize_rw2(&mut self) {
         let t = |i: usize| self.rw2_tags.get(i).copied().flatten().map(u32::from);
         let mut add = |tag: Tag, v: u32| {
@@ -767,8 +816,8 @@ mod tests {
         assert_eq!(field_of(&fields, Tag::PhotographicSensitivity), Some(100));
     }
 
-    /// Tag 4 in a real TIFF is `FillOrder`, so the substitution must be gated
-    /// on the RW2 version word or it corrupts every ordinary TIFF.
+    /// The substitution must be gated on the RW2 version word: tags 2-7 mean
+    /// nothing in baseline TIFF but are free for another dialect to claim.
     #[test]
     fn a_plain_tiff_gets_no_synthesised_fields() {
         let mut f = rw2(&[(4, 10), (5, 18), (6, 4010), (7, 6018), (0x17, 100)]);
@@ -785,6 +834,76 @@ mod tests {
         let (fields, _le) = parse_exif(&f).unwrap();
         assert_eq!(field_of(&fields, Tag::ImageWidth), None);
         assert_eq!(field_of(&fields, Tag::ImageLength), None);
+    }
+
+    /// A DNG-shaped TIFF: IFD0 is a thumbnail carrying a `SubIFDs` pointer,
+    /// and the sub-image holds the real size plus `DefaultCropSize`.
+    fn dng(crop: Option<(u16, u16)>) -> Vec<u8> {
+        // Layout: header(8) | IFD0 | SubIFD | (no trailing data)
+        let ifd0_at = 8usize;
+        let ifd0_entries = 3usize;
+        let sub_at = ifd0_at + 2 + ifd0_entries * 12 + 4;
+        let mut f = vec![0x49, 0x49];
+        f.extend_from_slice(&TIFF_FORTY_TWO.to_le_bytes());
+        f.extend_from_slice(&(ifd0_at as u32).to_le_bytes());
+
+        let short = |f: &mut Vec<u8>, tag: u16, v: u16| {
+            f.extend_from_slice(&tag.to_le_bytes());
+            f.extend_from_slice(&3u16.to_le_bytes());
+            f.extend_from_slice(&1u32.to_le_bytes());
+            f.extend_from_slice(&v.to_le_bytes());
+            f.extend_from_slice(&[0, 0]);
+        };
+        // IFD0: a 256x171 thumbnail plus the sub-image pointer.
+        f.extend_from_slice(&(ifd0_entries as u16).to_le_bytes());
+        short(&mut f, 0x0100, 256);
+        short(&mut f, 0x0101, 171);
+        f.extend_from_slice(&0x014au16.to_le_bytes());
+        f.extend_from_slice(&4u16.to_le_bytes());          // LONG
+        f.extend_from_slice(&1u32.to_le_bytes());
+        f.extend_from_slice(&(sub_at as u32).to_le_bytes());
+        f.extend_from_slice(&0u32.to_le_bytes());          // no next IFD
+        assert_eq!(f.len(), sub_at);
+
+        // Sub-image: the full readout, optionally with DefaultCropSize.
+        let n = if crop.is_some() { 3u16 } else { 2 };
+        f.extend_from_slice(&n.to_le_bytes());
+        short(&mut f, 0x0100, 6188);
+        short(&mut f, 0x0101, 4120);
+        if let Some((w, h)) = crop {
+            f.extend_from_slice(&0xc620u16.to_le_bytes());
+            f.extend_from_slice(&3u16.to_le_bytes());      // SHORT
+            f.extend_from_slice(&2u32.to_le_bytes());
+            f.extend_from_slice(&w.to_le_bytes());
+            f.extend_from_slice(&h.to_le_bytes());
+        }
+        f.extend_from_slice(&0u32.to_le_bytes());
+        f
+    }
+
+    /// **IFD0 of a DNG is a thumbnail by specification**, so the primary IFD
+    /// keeps answering 256 — the sub-image is reachable separately rather than
+    /// overwriting it.
+    #[test]
+    fn sub_images_get_their_own_ifd_number() {
+        let (fields, _le) = parse_exif(&dng(None)).unwrap();
+        let at = |tag: Tag, ifd: In| fields.iter()
+            .find(|f| f.tag == tag && f.ifd_num == ifd)
+            .and_then(|f| f.value.get_uint(0));
+        assert_eq!(at(Tag::ImageWidth, In::PRIMARY), Some(256));
+        assert_eq!(at(Tag::ImageWidth, In::SUB_IMAGE), Some(6188));
+        assert_eq!(at(Tag::ImageLength, In::SUB_IMAGE), Some(4120));
+    }
+
+    /// The sub-image base sits above the chained IFDs (capped at 8) and above
+    /// `In::MPF`, so nothing it writes can land on an existing allocation.
+    #[test]
+    fn the_sub_image_base_cannot_collide() {
+        assert!(In::SUB_IMAGE.index() >= 8);
+        assert_ne!(In::SUB_IMAGE, In::PRIMARY);
+        assert_ne!(In::SUB_IMAGE, In::THUMBNAIL);
+        #[cfg(feature = "mpf")]
+        assert_ne!(In::SUB_IMAGE, In::MPF);
     }
 
     #[test]

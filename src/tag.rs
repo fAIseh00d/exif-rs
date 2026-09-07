@@ -235,6 +235,14 @@ generate_well_known_tag_constants!(
     (GPSInfoIFDPointer, 0x8825, DefaultValue::None, d_default,
      unit![],
      "GPS Info IFD pointer"),
+    /// A pointer to the sub-image IFDs [TIFF/EP, DNG 1.6.0.0 section 4].
+    /// This is used for the internal structure and will not be returned
+    /// to the user; the sub-images appear as IFDs of their own, numbered
+    /// from [`crate::In::SUB_IMAGE`].
+    #[doc(hidden)]
+    (SubIFDs, 0x014a, DefaultValue::None, d_default,
+     unit![],
+     "Sub-image IFD pointers"),
 
     |Context::Exif|
 
@@ -275,6 +283,17 @@ generate_well_known_tag_constants!(
     (Model, 0x110, DefaultValue::None, d_default,
      unit![],
      "Model of image input equipment"),
+    /// The origin of the region a converter is expected to output, in the
+    /// sub-image's own coordinates [DNG 1.6.0.0 section 4].
+    (DefaultCropOrigin, 0xc61f, DefaultValue::None, d_default,
+     unit![],
+     "Default crop origin"),
+    /// The SIZE of the region a converter is expected to output — the
+    /// dimensions a developed file actually has, as distinct from the full
+    /// sensor readout in `ImageWidth` [DNG 1.6.0.0 section 4].
+    (DefaultCropSize, 0xc620, DefaultValue::None, d_default,
+     unit![],
+     "Default crop size"),
     (StripOffsets, 0x111, DefaultValue::None, d_default,
      unit![],
      "Image data location"),
