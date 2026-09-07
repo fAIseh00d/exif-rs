@@ -29,6 +29,9 @@ use std::io::Read;
 
 use crate::error::{Error, PartialResult};
 use crate::exifimpl::Exif;
+use crate::tag::Tag;
+use crate::tiff::{Field, IfdEntry, In};
+use crate::value::Value;
 use crate::isobmff;
 use crate::jpeg;
 use crate::png;
@@ -104,9 +107,21 @@ impl Reader {
     /// Parses the Exif attributes from raw Exif data.
     /// If an error occurred, `exif::Error` is returned.
     pub fn read_raw(&self, data: Vec<u8>) -> Result<Exif, Error> {
+        self.read_raw_with_extra(data, Vec::new())
+    }
+
+    /// `read_raw`, plus fields the CONTAINER states that its Exif cannot.
+    ///
+    /// A RAF is the case this exists for: its Exif is the embedded JPEG's and
+    /// describes the JPEG, while the raw image's own size lives in the RAF's
+    /// CFA header. The fields are appended as an ordinary sub-image IFD, so a
+    /// RAF answers `get_field(ImageWidth, In::SUB_IMAGE)` exactly as a DNG does.
+    fn read_raw_with_extra(&self, data: Vec<u8>, extra: Vec<Field>)
+                           -> Result<Exif, Error> {
         let mut parser = tiff::Parser::new();
         parser.continue_on_error = self.continue_on_error.then(|| Vec::new());
         parser.parse(&data)?;
+        parser.entries.extend(extra.into_iter().map(IfdEntry::from_parsed_field));
         let exif = Exif::new(data, parser.entries, parser.little_endian);
         match parser.continue_on_error {
             Some(v) if !v.is_empty() =>
@@ -118,10 +133,11 @@ impl Reader {
     /// Parses the Exif attributes from raw Exif data with optional MPF data.
     /// If an error occurred, `exif::Error` is returned.
     #[cfg(feature = "mpf")]
-    fn read_raw_with_mpf(&self, exif_data: Vec<u8>, mpf_data: Option<Vec<u8>>, mpf_app2_offset: u64) -> Result<Exif, Error> {
+    fn read_raw_with_mpf(&self, exif_data: Vec<u8>, mpf_data: Option<Vec<u8>>, mpf_app2_offset: u64, extra: Vec<Field>) -> Result<Exif, Error> {
         let mut parser = tiff::Parser::new();
         parser.continue_on_error = self.continue_on_error.then(|| Vec::new());
         parser.parse(&exif_data)?;
+        parser.entries.extend(extra.into_iter().map(IfdEntry::from_parsed_field));
 
         let exif = if let Some(mut mpf_buf) = mpf_data {
             // Parse MPF data and convert offsets using MPF module
@@ -187,6 +203,11 @@ impl Reader {
         let mut buf = Vec::new();
         reader.by_ref().take(4096).read_to_end(&mut buf)?;
 
+        // A RAF's Exif comes from its embedded JPEG and therefore describes
+        // the JPEG. What the RAW image measures is stated only in the RAF's
+        // own CFA header, so it is carried out separately and attached below.
+        let mut raf_raw_image: Option<raf::RafRawImage> = None;
+
         #[cfg(feature = "mpf")]
         let mut mpf_data: Option<Vec<u8>> = None;
         #[cfg(feature = "mpf")]
@@ -217,7 +238,9 @@ impl Reader {
             return self.read_raw_vec(buf_vec);
         } else if raf::is_raf(&buf) {
             reader.seek(io::SeekFrom::Start(0))?;
-            buf = raf::get_exif_attr(reader)?;
+            let (exif, raw) = raf::get_exif_and_raw_image(reader)?;
+            buf = exif;
+            raf_raw_image = raw;
         } else if webp::is_webp(&buf) {
             buf = webp::get_exif_attr(&mut buf.chain(reader))?;
         } else {
@@ -226,11 +249,12 @@ impl Reader {
 
         #[cfg(feature = "mpf")]
         {
-            self.read_raw_with_mpf(buf, mpf_data, mpf_app2_offset)
+            self.read_raw_with_mpf(buf, mpf_data, mpf_app2_offset,
+                                   raf_sub_image(raf_raw_image))
         }
         #[cfg(not(feature = "mpf"))]
         {
-            self.read_raw(buf)
+            self.read_raw_with_extra(buf, raf_sub_image(raf_raw_image))
         }
     }
 }
@@ -323,4 +347,14 @@ mod tests {
             panic!("partial result expected");
         }
     }
+}
+
+/// The RAF's raw image, as ordinary sub-image fields.
+fn raf_sub_image(raw: Option<raf::RafRawImage>) -> Vec<Field> {
+    raw.map_or_else(Vec::new, |r| vec![
+        Field { tag: Tag::ImageWidth, ifd_num: In::SUB_IMAGE,
+                value: Value::Long(vec![r.width]) },
+        Field { tag: Tag::ImageLength, ifd_num: In::SUB_IMAGE,
+                value: Value::Long(vec![r.height]) },
+    ])
 }
