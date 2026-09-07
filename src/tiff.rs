@@ -42,6 +42,26 @@ pub(crate) const TIFF_FORTY_TWO: u16 = 0x002a;
 pub const TIFF_BE_SIG: [u8; 4] = [0x4d, 0x4d, 0x00, 0x2a];
 pub const TIFF_LE_SIG: [u8; 4] = [0x49, 0x49, 0x2a, 0x00];
 
+// Raw dialects: TIFF files whose VERSION WORD is a vendor signature rather
+// than 42. The byte order mark, the IFD chain and every entry are ordinary
+// TIFF — only the third and fourth bytes differ — so rejecting them on the
+// version alone refuses a file this parser can otherwise read completely.
+//
+// Both vendors write little-endian exclusively, so there is no big-endian
+// spelling to accept; a `MM`-flagged file carrying one of these words is not
+// something either has been observed to produce.
+
+/// Olympus ORF, the common signature (`IIRO`).
+pub(crate) const ORF_RO: u16 = 0x4f52;
+/// Olympus ORF as written by later and high-resolution bodies (`IIRS`).
+pub(crate) const ORF_RS: u16 = 0x5352;
+/// Panasonic RW2/RAW (`IIU\0`) — version word 85.
+pub(crate) const RW2_EIGHTY_FIVE: u16 = 0x0055;
+
+pub const ORF_RO_SIG: [u8; 4] = [0x49, 0x49, 0x52, 0x4f];
+pub const ORF_RS_SIG: [u8; 4] = [0x49, 0x49, 0x52, 0x53];
+pub const RW2_LE_SIG: [u8; 4] = [0x49, 0x49, 0x55, 0x00];
+
 // Partially parsed TIFF field (IFD entry).
 // Value::Unknown is abused to represent a partially parsed value.
 // Such a value must never be exposed to the users of this library.
@@ -225,9 +245,11 @@ impl Parser {
 
     fn parse_header<E>(&mut self, data: &[u8])
                        -> Result<(), Error> where E: Endian {
-        // Parse the rest of the header (42 and the IFD offset).
-        if E::loadu16(data, 2) != TIFF_FORTY_TWO {
-            return Err(Error::InvalidFormat("Invalid forty two"));
+        // Parse the rest of the header (42 — or a raw dialect's stand-in for
+        // it — and the IFD offset).
+        match E::loadu16(data, 2) {
+            TIFF_FORTY_TWO | ORF_RO | ORF_RS | RW2_EIGHTY_FIVE => {},
+            _ => return Err(Error::InvalidFormat("Invalid forty two")),
         }
         let ifd_offset = E::loadu32(data, 4) as usize;
         self.parse_body::<E>(data, ifd_offset)
@@ -351,7 +373,9 @@ impl Parser {
 }
 
 pub fn is_tiff(buf: &[u8]) -> bool {
-    buf.starts_with(&TIFF_BE_SIG) || buf.starts_with(&TIFF_LE_SIG)
+    buf.starts_with(&TIFF_BE_SIG) || buf.starts_with(&TIFF_LE_SIG) ||
+        buf.starts_with(&ORF_RO_SIG) || buf.starts_with(&ORF_RS_SIG) ||
+        buf.starts_with(&RW2_LE_SIG)
 }
 
 /// A struct used to parse a DateTime field.
