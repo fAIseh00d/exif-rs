@@ -32,6 +32,7 @@ use crate::exifimpl::Exif;
 use crate::isobmff;
 use crate::jpeg;
 use crate::png;
+use crate::raf;
 use crate::tiff;
 use crate::webp;
 
@@ -175,6 +176,7 @@ impl Reader {
     /// - HEIF and coding-specific variations including HEIC and AVIF
     /// - PNG
     /// - WebP
+    /// - Fujifilm RAF (the Exif comes from its embedded JPEG)
     ///
     /// This method is provided for the convenience even though
     /// parsing containers is basically out of the scope of this library.
@@ -213,6 +215,9 @@ impl Reader {
             reader.seek(io::SeekFrom::Start(0))?;
             let buf_vec = isobmff::crx::get_exif_attr_vec(reader)?;
             return self.read_raw_vec(buf_vec);
+        } else if raf::is_raf(&buf) {
+            reader.seek(io::SeekFrom::Start(0))?;
+            buf = raf::get_exif_attr(reader)?;
         } else if webp::is_webp(&buf) {
             buf = webp::get_exif_attr(&mut buf.chain(reader))?;
         } else {

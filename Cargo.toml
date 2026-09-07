@@ -1,5 +1,12 @@
 [package]
-name = "exif"
+# The repository and the registry disagreed about this: upstream's manifest
+# says `exif` while the crate is published as `kamadak-exif`, with the library
+# still importable as `exif`. Cargo matches a `[patch.crates-io]` entry on the
+# PACKAGE name, so a consumer could not patch this fork in at all -- the patch
+# resolved to a package named `exif` and was silently dropped from the graph
+# ("patch ... was not used"), which builds fine against upstream and looks like
+# the fork simply having no effect.
+name = "kamadak-exif"
 version = "0.6.1"
 authors = ["KAMADA Ken'ichi <kamada@nanohz.org>"]
 edition = "2021"
@@ -13,6 +20,11 @@ readme = "README"
 keywords = ["Exif", "JPEG", "parser", "reader", "TIFF"]
 categories = ["multimedia::encoding", "multimedia::images", "parser-implementations"]
 license = "BSD-2-Clause"
+
+# Keeps `use exif::...` working for every consumer and for this crate's own
+# examples and tests, exactly as the published crate does.
+[lib]
+name = "exif"
 
 [features]
 default = []
