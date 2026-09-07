@@ -414,12 +414,14 @@ impl Exif {
     ///
     /// # Examples
     /// ```
-    /// # use exif::{Reader, make_note::maker_tag::{MakerTag, MakerNoteVendor}};
+    /// # use exif::{Reader, make_note::maker_tag::MakerTag};
+    /// # fn main() { let _ = example(); }
+    /// # fn example() -> Option<()> {
     /// # let file = std::fs::File::open("tests/exif.jpg").unwrap();
     /// # let exif = Reader::new().read_from_container(
     /// #     &mut std::io::BufReader::new(&file)).unwrap();
     /// // Get a specific MakerNote field
-    /// let vendor = exif.maker_note_vendor().ok().copied()?;
+    /// let vendor = exif.maker_note_vendor().ok()?;
     /// let tag = MakerTag::new(vendor, 0x0002);
     /// let field = exif.get_maker_note_field(&tag)?;
     /// println!("{}: {}", field.tag, field.display_value());
