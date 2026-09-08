@@ -436,8 +436,9 @@ pub mod crx {
     ///
     /// * **`THMB`** — a 160x120 thumbnail, ~9.7 KB;
     /// * **`PRVW`** — a 1620x1080 preview, ~332 KB;
-    /// * a full-size JPEG carried as a **track sample** in `mdat` (2.4 MB on
-    ///   an R6 Mark II), which needs the sample tables and is not read here.
+    /// * a full-size JPEG carried as a **track sample** in `mdat` — 2.4 MB
+    ///   and 6000x4000 on an R6 Mark II, against PRVW's 1620x1080 — found
+    ///   through the track's sample tables.
     ///
     /// Both boxes carry a 16-byte header before the JPEG, and their layouts
     /// differ — `PRVW` states width and height where `THMB` states a length —
@@ -503,14 +504,94 @@ pub mod crx {
                             && id == CANON_PREVIEW_UUID { 8 } else { 0 };
                         walk(reader, at + 8 + 16 + extra, at + size, depth + 1, out)?;
                     }
-                    b"moov" | b"udta" | b"trak" => {
+                    b"moov" | b"udta" | b"trak" | b"mdia" | b"minf" => {
                         walk(reader, at + 8, at + size, depth + 1, out)?;
+                    }
+                    // A track's sample sits where its chunk-offset table says,
+                    // with the size its sample-size table gives. Canon carries
+                    // the full-size JPEG this way, so it is reachable by no
+                    // tag and by no box name -- only by the tables.
+                    b"stbl" => {
+                        if let Some(img) = sample_of(reader, at + 8, at + size)? {
+                            out.push(img);
+                        }
                     }
                     _ => {}
                 }
                 at += size;
             }
             Ok(())
+        }
+
+        /// The single sample a `stbl` describes, when it is a JPEG.
+        ///
+        /// Only a ONE-sample track is read. A track with several samples is a
+        /// sequence rather than an embedded still, and `stsc` would have to be
+        /// honoured to place any but the first. Canon writes one sample per
+        /// track.
+        ///
+        /// **Whether it is a JPEG is decided by looking**, not by the sample
+        /// description: every CR3 track declares `CRAW` in its `stsd`,
+        /// including the one holding an ordinary JPEG, so the format code
+        /// cannot distinguish them. The SOI can.
+        fn sample_of<R: BufRead + Seek>(
+            reader: &mut R, start: u64, end: u64,
+        ) -> Result<Option<(u64, u32)>, Error> {
+            let (mut offset, mut size) = (None, None);
+            let mut at = start;
+            while at + 8 <= end {
+                reader.seek(SeekFrom::Start(at))?;
+                let mut head = [0u8; 8];
+                if reader.read_exact(&mut head).is_err() {
+                    break;
+                }
+                let boxsize = u64::from(BigEndian::loadu32(&head, 0));
+                if boxsize < 8 || at + boxsize > end {
+                    break;
+                }
+                let mut body = vec![0u8; (boxsize as usize - 8).min(64)];
+                if reader.read_exact(&mut body).is_ok() {
+                    match &head[4..8] {
+                        // version/flags, sample_size, sample_count, [entries]
+                        b"stsz" if body.len() >= 16 => {
+                            let stated = BigEndian::loadu32(&body, 4);
+                            let count = BigEndian::loadu32(&body, 8);
+                            if count == 1 {
+                                size = Some(if stated == 0 {
+                                    BigEndian::loadu32(&body, 12)
+                                } else {
+                                    stated
+                                });
+                            }
+                        }
+                        // version/flags, entry_count, [64-bit entries]
+                        b"co64" if body.len() >= 16
+                            && BigEndian::loadu32(&body, 4) == 1 =>
+                        {
+                            offset = Some(BigEndian::loadu64(&body, 8));
+                        }
+                        b"stco" if body.len() >= 12
+                            && BigEndian::loadu32(&body, 4) == 1 =>
+                        {
+                            offset = Some(u64::from(BigEndian::loadu32(&body, 8)));
+                        }
+                        _ => {}
+                    }
+                }
+                at += boxsize;
+            }
+            let (Some(offset), Some(size)) = (offset, size) else {
+                return Ok(None);
+            };
+            if size == 0 {
+                return Ok(None);
+            }
+            reader.seek(SeekFrom::Start(offset))?;
+            let mut soi = [0u8; 2];
+            if reader.read_exact(&mut soi).is_err() || soi != [0xFF, 0xD8] {
+                return Ok(None);
+            }
+            Ok(Some((offset, size)))
         }
 
         let end = reader.seek(SeekFrom::End(0))?;
