@@ -82,6 +82,14 @@ pub enum EmbeddedSubImageSource {
     /// An image the CONTAINER addresses rather than any tag — a CR3's `PRVW`
     /// and `THMB` boxes. Its offset is already a file offset.
     ContainerBox = 8,
+
+    /// An image a MakerNote addresses OUTSIDE its own block.
+    ///
+    /// The pre-2008 Olympus format stores an 11 KB thumbnail as tag `0x0100`
+    /// at a TIFF-relative offset, while the MakerNote itself is under a
+    /// kilobyte — so the parser, which only ever sees its own bytes, cannot
+    /// resolve it. It reports the address and this is what it becomes.
+    MakerNoteValue = 9,
 }
 
 impl EmbeddedSubImageSource {
@@ -101,6 +109,7 @@ impl EmbeddedSubImageSource {
             EmbeddedSubImageSource::IfdImage => "IfdImage",
             EmbeddedSubImageSource::IfdStrip => "IfdStrip",
             EmbeddedSubImageSource::ContainerBox => "ContainerBox",
+            EmbeddedSubImageSource::MakerNoteValue => "MakerNoteValue",
         }
     }
 }

@@ -121,7 +121,17 @@ pub enum MakerNoteVendor {
     Unknown,
 }
 
+/// The pre-2008 Olympus MakerNote: `OLYMP\0` rather than `OLYMPUS\0`.
+///
+/// Two things differ and both matter: an 8-byte header instead of 12, and
+/// offsets counted from the TIFF header instead of from the MakerNote. The
+/// bodies are the C5050Z, C8080WZ, SP550UZ and their contemporaries.
+fn is_old_olympus(data: &[u8]) -> bool {
+    data.starts_with(b"OLYMP\x00") && !data.starts_with(b"OLYMPUS")
+}
+
 impl MakerNoteVendor {
+
     /// Detect vendor from MakerNote header data and optional Make field.
     ///
     /// Based on https://exiv2.org/makernote.html header signatures.
@@ -210,6 +220,12 @@ impl MakerNoteVendor {
     pub fn header_size_in(&self, data: &[u8]) -> usize {
         match self {
             MakerNoteVendor::Sony if !data.starts_with(b"SONY") => 0,
+            // **`OLYMP\0` is the OLD format and a different shape.** Six
+            // signature bytes plus two version bytes, where `OLYMPUS\0`
+            // carries a byte-order mark and version after its eight -- so the
+            // newer header is 12 and this one is 8. Skipping 12 here eats the
+            // first entry, which is the thumbnail.
+            MakerNoteVendor::Olympus if is_old_olympus(data) => 8,
             _ => self.header_size(),
         }
     }
@@ -221,7 +237,15 @@ impl MakerNoteVendor {
     /// header that was actually skipped, and computing it from the nominal
     /// size would be wrong for exactly the files `header_size_in` exists for.
     pub fn offset_correction_in(&self, data: &[u8]) -> i32 {
-        if self.has_tiff_header() { 0 } else { self.header_size_in(data) as i32 }
+        // The old Olympus format counts its offsets from the TIFF header, not
+        // from the MakerNote -- a C5050Z puts its thumbnail at 4096, which is
+        // where the file really holds it. Correcting by the header would move
+        // it, and the value is outside this block in any case.
+        if self.has_tiff_header() || is_old_olympus(data) {
+            0
+        } else {
+            self.header_size_in(data) as i32
+        }
     }
 
     /// Returns the proprietary header size (bytes to skip before IFD).

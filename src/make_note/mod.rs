@@ -124,6 +124,7 @@ pub fn parse_make_note_with_vendor(
         Vec<maker_tag::MakerNoteField>,
         maker_tag::MakerNoteVendor,
         bool,
+        Vec<UnresolvedValue>,
     ),
     Error,
 > {
@@ -193,7 +194,20 @@ pub fn parse_make_note_with_vendor(
         })
         .collect();
 
-    Ok((maker_fields, vendor, le))
+    Ok((maker_fields, vendor, le, parser.unresolved))
+}
+
+/// An entry the MakerNote declares but cannot resolve within its own bytes.
+///
+/// `offset` is as the file states it -- uncorrected -- because the base it
+/// counts from is the vendor's business and the caller's to apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnresolvedValue {
+    pub tag: u16,
+    pub typ: u16,
+    pub count: u32,
+    pub offset: u32,
+    pub len: u32,
 }
 
 #[derive(Debug)]
@@ -203,6 +217,21 @@ pub struct MakerNoteParser {
     pub little_endian: bool,
     // `Some<Vec>` to enable the option and `None` to disable it.
     pub continue_on_error: Option<Vec<Error>>,
+
+    /// Entries whose value lies OUTSIDE this MakerNote block.
+    ///
+    /// A MakerNote is parsed from its own bytes alone, which keeps the trust
+    /// boundary narrow -- it can never read elsewhere in the file. But some
+    /// vendors put a value outside it and address it from the TIFF header: an
+    /// old Olympus stores its 11 KB thumbnail as tag 0x0100 at offset 4096,
+    /// where the MakerNote itself is 958 bytes long.
+    ///
+    /// Erroring on that abandoned the whole MakerNote -- three corpus bodies
+    /// reported `vendor: unrecognised` and lost all ~30 of their other tags
+    /// over one unreachable value. So the address is RECORDED instead, and
+    /// whoever holds the buffer resolves it, exactly as a CR3's `PRVW` box and
+    /// a Panasonic `0x002E` value are already resolved.
+    pub unresolved: Vec<UnresolvedValue>,
 
     pub consider_tiff_offset: bool,
 
@@ -229,6 +258,7 @@ impl MakerNoteParser {
             entries: Vec::new(),
             little_endian: false,
             continue_on_error: None,
+            unresolved: Vec::new(),
             consider_tiff_offset: false,
             tiff_offset: 0,
             offset_correction: 0,
@@ -242,6 +272,7 @@ impl MakerNoteParser {
             entries: Vec::new(),
             little_endian: false,
             continue_on_error: None,
+            unresolved: Vec::new(),
             consider_tiff_offset,
             tiff_offset,
             offset_correction,
@@ -334,10 +365,14 @@ impl MakerNoteParser {
             if data.len() - offset < 12 {
                 return Err(Error::InvalidFormat("Truncated IFD"));
             }
-            let entry = Self::parse_ifd_entry::<E>(data, offset, tiff_correction, self.offset_correction);
+            let entry = Self::parse_ifd_entry::<E>(
+                data, offset, tiff_correction, self.offset_correction,
+                &mut self.unresolved);
             offset += 12;
             let (tag, val) = match entry {
-                Ok(x) => x,
+                Ok(Some(x)) => x,
+                // Understood, but its value is elsewhere in the file.
+                Ok(None) => continue,
                 Err(e) => {
                     self.check_error(e)?;
                     continue;
@@ -409,8 +444,12 @@ impl MakerNoteParser {
         Ok(next_ifd_offset as usize)
     }
 
-    fn parse_ifd_entry<E>(data: &[u8], offset: usize, tiff_correction: i32, offset_correction: i32)
-                          -> Result<(u16, Value), Error> where E: Endian {
+    /// `Ok(None)` means the entry was understood but its value lives outside
+    /// this block; it has been recorded in `unresolved`.
+    fn parse_ifd_entry<E>(data: &[u8], offset: usize, tiff_correction: i32,
+                          offset_correction: i32,
+                          unresolved: &mut Vec<UnresolvedValue>)
+                          -> Result<Option<(u16, Value)>, Error> where E: Endian {
         // The size of entry has been checked in parse_ifd().
         let tag = E::loadu16(data, offset);
         let typ = E::loadu16(data, offset + 2);
@@ -429,14 +468,23 @@ impl MakerNoteParser {
             let corrected_ofs = signed_corrected_ofs as usize;
 
             if data.len() < corrected_ofs || data.len() - corrected_ofs < vallen || signed_corrected_ofs.is_negative() {
-                return Err(Error::InvalidFormat("Truncated field value"));
+                // **Outside this block.** Record where, and let the caller
+                // carry on with the rest of the MakerNote.
+                unresolved.push(UnresolvedValue {
+                    tag,
+                    typ,
+                    count: cnt,
+                    offset: raw_ofs as u32,
+                    len: vallen as u32,
+                });
+                return Ok(None);
             }
 
             Value::Unknown(typ, cnt, corrected_ofs as u32)
         };
 
 
-        Ok((tag, val))
+        Ok(Some((tag, val)))
     }
 
     fn parse_child_ifd<E>(&mut self, data: &[u8],
@@ -599,16 +647,27 @@ mod tests {
                              value: Value::Short(_) }],
             errors: [Error::InvalidFormat("Truncated IFD")]
         }
-        // 1st entry broken.
-        define_test! {
-            data: b"MM\0\x2a\0\0\0\x08\
-                    \0\x02\x01\x00\0\x03\0\0\0\x03\0\0\0\x21\
-                          \x01\x01\0\x03\0\0\0\x01\0\x15\0\0\
-                          \0\0\0\0",
-            fields: [Field { tag: Tag::ImageLength, ifd_num: In(0),
-                             value: Value::Short(_) }],
-            errors: [Error::InvalidFormat("Truncated field value")]
-        }
+    }
+
+    /// **A value outside the block is recorded, not fatal.** It used to abort
+    /// the whole MakerNote: three corpus bodies reported `vendor:
+    /// unrecognised` and lost all ~30 of their tags because one 11 KB
+    /// thumbnail sat at a TIFF-relative offset beyond a sub-kilobyte block.
+    /// The address is reported instead, for whoever holds the buffer.
+    #[test]
+    fn a_value_outside_the_block_is_reported_not_fatal() {
+        // One entry whose value is 3 SHORTs (6 bytes, so out of line) at an
+        // offset past the end of this data.
+        let data: &[u8] = b"MM\0\x2a\0\0\0\x08\
+                            \0\x01\x01\x01\0\x03\0\0\0\x03\0\0\0\x21\
+                            \0\0\0\0";
+        let mut parser = MakerNoteParser::new();
+        parser.parse(data, None).expect("an unreachable value must not abort");
+        assert_eq!(parser.unresolved.len(), 1, "the address must be reported");
+        let u = parser.unresolved[0];
+        assert_eq!(u.tag, 0x0101);
+        assert_eq!(u.offset, 0x21);
+        assert_eq!(u.len, 6);
     }
 
     /// **This is upstream's TIFF recovery test pointed at the MakerNote

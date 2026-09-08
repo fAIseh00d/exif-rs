@@ -98,6 +98,11 @@ pub struct Exif {
     // actually is.
     #[cfg(feature = "make_note")]
     maker_note_offset: u32,
+    /// Entries whose value lies outside the MakerNote block; see
+    /// [`crate::make_note::UnresolvedValue`]. Resolved in `embedded_images`,
+    /// where the buffer is.
+    #[cfg(feature = "make_note")]
+    maker_note_unresolved: Vec<crate::make_note::UnresolvedValue>,
     // Images the CONTAINER addresses that no tag does — a CR3 keeps its
     // thumbnail and preview in boxes, so nothing in the Exif can find them.
     container_images: Vec<(u64, u32)>,
@@ -122,7 +127,7 @@ impl Exif {
 
         // Try to parse MakerNote if present
         #[cfg(feature = "make_note")]
-        let (maker_note_fields, maker_note_vendor, maker_note_offset) =
+        let (maker_note_fields, maker_note_vendor, maker_note_offset, maker_note_unresolved) =
             Self::parse_maker_note_internal(&buf, &entries, little_endian);
 
         Self {
@@ -137,6 +142,8 @@ impl Exif {
             maker_note_vendor,
             #[cfg(feature = "make_note")]
             maker_note_offset,
+            #[cfg(feature = "make_note")]
+            maker_note_unresolved,
             container_images: Vec::new(),
             #[cfg(feature = "mpf")]
             mpf_fields: HashMap::new(),
@@ -183,7 +190,7 @@ impl Exif {
 
         // Try to parse MakerNote if present
         #[cfg(feature = "make_note")]
-        let (maker_note_fields, maker_note_vendor, maker_note_offset) =
+        let (maker_note_fields, maker_note_vendor, maker_note_offset, maker_note_unresolved) =
             Self::parse_maker_note_internal(&buf, &entries, little_endian);
 
         // Parse MPF fields
@@ -201,6 +208,8 @@ impl Exif {
             maker_note_vendor,
             #[cfg(feature = "make_note")]
             maker_note_offset,
+            #[cfg(feature = "make_note")]
+            maker_note_unresolved,
             container_images: Vec::new(),
             mpf_fields,
         }
@@ -236,19 +245,20 @@ impl Exif {
         buf: &[u8],
         entries: &[IfdEntry],
         little_endian: bool,
-    ) -> (HashMap<MakerTag, MakerNoteField>, Result<MakerNoteVendor, crate::Error>, u32) {
+    ) -> (HashMap<MakerTag, MakerNoteField>, Result<MakerNoteVendor, crate::Error>, u32,
+          Vec<crate::make_note::UnresolvedValue>) {
         // Find MakerNote field
         let maker_note_entry = entries.iter()
             .find(|e| e.ifd_num_tag().1 == Tag::MakerNote);
 
         let Some(maker_note_entry) = maker_note_entry else {
-            return (HashMap::new(), Err(crate::Error::MakerNoteNotFound), 0);
+            return (HashMap::new(), Err(crate::Error::MakerNoteNotFound), 0, Vec::new());
         };
 
         // Get MakerNote field value
         let field = maker_note_entry.ref_field(buf, little_endian);
         let crate::value::Value::Undefined(ref data, offset) = field.value else {
-            return (HashMap::new(), Err(crate::Error::MakerNoteNotFound), 0);
+            return (HashMap::new(), Err(crate::Error::MakerNoteNotFound), 0, Vec::new());
         };
 
         // Get Make field for vendor detection
@@ -268,18 +278,18 @@ impl Exif {
         #[cfg(feature = "make_note")]
         {
             match crate::make_note::parse_make_note_with_vendor(data, offset, make) {
-                Ok((fields, vendor, _le)) => {
+                Ok((fields, vendor, _le, unresolved)) => {
                     let map = fields.into_iter()
                         .map(|f| (f.tag, f))
                         .collect();
-                    (map, Ok(vendor), offset)
+                    (map, Ok(vendor), offset, unresolved)
                 }
-                Err(e) => (HashMap::new(), Err(e), offset)
+                Err(e) => (HashMap::new(), Err(e), offset, Vec::new())
             }
         }
         #[cfg(not(feature = "make_note"))]
         {
-            (HashMap::new(), Err(crate::Error::NotFound("MakerNote parsing disabled")), 0)
+            (HashMap::new(), Err(crate::Error::NotFound("MakerNote parsing disabled")), 0, Vec::new())
         }
     }
 
@@ -474,6 +484,36 @@ impl Exif {
         //
         // The value's own position in the TIFF is the image's position, since
         // a value this size is stored out of line.
+        // **A MakerNote value that lives outside the MakerNote.** The parser
+        // records the address rather than reaching for it (see
+        // `UnresolvedValue`); resolving it needs the buffer, which is here.
+        // Old Olympus tag 0x0100 is an 11 KB thumbnail at a TIFF-relative
+        // offset, on bodies whose MakerNote is under a kilobyte.
+        #[cfg(feature = "make_note")]
+        {
+            const OLYMPUS_THUMBNAIL: u16 = 0x0100;
+            let olympus = matches!(
+                self.maker_note_vendor,
+                Ok(crate::make_note::maker_tag::MakerNoteVendor::Olympus)
+            );
+            for u in &self.maker_note_unresolved {
+                if !olympus || u.tag != OLYMPUS_THUMBNAIL || u.len == 0 {
+                    continue;
+                }
+                images.push(EmbeddedSubImage {
+                    source: EmbeddedSubImageSource::MakerNoteValue,
+                    length: u.len,
+                    offset: self.file_offset(u64::from(u.offset)),
+                    subfile_type: None,
+                    compression: None,
+                    photometric: None,
+                    ifd: None,
+                    width: None,
+                    height: None,
+                });
+            }
+        }
+
         const PANASONIC_JPG_FROM_RAW: u16 = 0x002e;
         if let Some(f) = self.fields().find(|f| {
             f.tag.number() == PANASONIC_JPG_FROM_RAW && f.ifd_num == In::PRIMARY
