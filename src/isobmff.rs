@@ -449,6 +449,36 @@ pub mod crx {
     ///
     /// The walk descends only into CONTAINER boxes. Recursing generally would
     /// mean walking `mdat`, which is the entire 30 MB raw.
+
+/// The JPEG inside a `PRVW`/`THMB` box: its offset and length.
+///
+/// Canon puts it 24 bytes in -- an 8-byte box header plus 16 of their own --
+/// and the length that follows from the box size matches exiftool exactly
+/// (332512 - 24 = 332488; 9712 - 24 = 9688). Confirmed across 341 corpus CR3s
+/// from 11 bodies, from a PowerShot SX70 to an R5 Mark II.
+///
+/// **The two bytes there are still read.** It is a layout this code does not
+/// parse, and reporting an offset without looking at it is how a caller ends
+/// up extracting 300 KB of Canon's header and calling it a preview -- silently,
+/// because nothing downstream can tell. A box whose JPEG is not where the
+/// layout says is skipped rather than guessed at: searching for an `SOI`
+/// instead would be a code path no file has ever taken, which is its own risk.
+fn jpeg_in_box<R: BufRead + Seek>(reader: &mut R, at: u64, size: u64) -> Option<(u64, u32)> {
+    /// The 8-byte box header plus Canon's own 16.
+    const JPEG_AT: u64 = 24;
+
+    if size <= JPEG_AT {
+        return None;
+    }
+    let mut soi = [0u8; 2];
+    reader.seek(SeekFrom::Start(at + JPEG_AT)).ok()?;
+    reader.read_exact(&mut soi).ok()?;
+    if soi != [0xFF, 0xD8] {
+        return None;
+    }
+    u32::try_from(size - JPEG_AT).ok().map(|len| (at + JPEG_AT, len))
+}
+
     pub fn preview_boxes<R>(reader: &mut R) -> Result<Vec<(u64, u32)>, Error>
     where
         R: BufRead + Seek,
@@ -481,10 +511,15 @@ pub mod crx {
                 }
                 match &boxtype {
                     b"PRVW" | b"THMB" => {
-                        if size > JPEG_AT {
-                            if let Ok(len) = u32::try_from(size - JPEG_AT) {
-                                out.push((at + JPEG_AT, len));
-                            }
+                        // **Verified, not assumed.** 24 is where these two
+                        // bodies put their JPEG on every corpus CR3, and it
+                        // matches exiftool -- but it is a layout we do not
+                        // parse, so it is checked rather than trusted. If the
+                        // SOI is not there the box is searched for one, and a
+                        // box with no JPEG in it is skipped instead of
+                        // reported as an image that is not there.
+                        if let Some((ofs, len)) = jpeg_in_box(reader, at, size) {
+                            out.push((ofs, len));
                         }
                     }
                     b"uuid" => {
