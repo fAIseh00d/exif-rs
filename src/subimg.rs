@@ -179,6 +179,72 @@ impl EmbeddedSubImage {
         }
     }
 
+    /// The image's dimensions, reading the JPEG's own header when the file
+    /// did not state them.
+    ///
+    /// [`Self::width`] and [`Self::height`] carry what the CONTAINER said, and
+    /// most formats say nothing: a Sony ARW addresses three JPEGs and sizes
+    /// none of them. Those dimensions are in each JPEG's `SOF` marker, so this
+    /// walks its segment chain — **a few short reads near the start of the
+    /// image, never the whole thing.** A 7.3 MB preview costs the same as a
+    /// 10 KB thumbnail.
+    ///
+    /// This is what makes an embedded image identifiable rather than merely
+    /// present. Without it a caller choosing "one big enough for this screen"
+    /// has only the byte length, and compression makes that a poor proxy — a
+    /// detailed thumbnail can outweigh a smooth preview of ten times the area.
+    ///
+    /// Returns the stated dimensions unread when they are already known.
+    pub fn dimensions<R>(&self, reader: &mut R) -> Result<(u32, u32), Error>
+    where
+        R: BufRead + Seek,
+    {
+        if let (Some(w), Some(h)) = (self.width, self.height) {
+            return Ok((w, h));
+        }
+        use std::io::SeekFrom;
+        reader.seek(SeekFrom::Start(self.offset))?;
+        let mut head = [0u8; 2];
+        reader.read_exact(&mut head)?;
+        if head != [0xFF, 0xD8] {
+            return Err(Error::InvalidFormat("Embedded image is not a JPEG"));
+        }
+        // Walk the marker chain to a frame header. Bounded by the image's own
+        // declared length so a malformed chain cannot read past it.
+        let mut pos: u64 = 2;
+        while pos + 4 <= u64::from(self.length) {
+            let mut marker = [0u8; 2];
+            reader.read_exact(&mut marker)?;
+            pos += 2;
+            if marker[0] != 0xFF {
+                return Err(Error::InvalidFormat("Broken JPEG segment chain"));
+            }
+            // SOF0..SOF15 carry the size; C4/C8/CC are not frame headers.
+            let is_sof = (0xC0..=0xCF).contains(&marker[1])
+                && !matches!(marker[1], 0xC4 | 0xC8 | 0xCC);
+            let mut len_be = [0u8; 2];
+            reader.read_exact(&mut len_be)?;
+            pos += 2;
+            let seg_len = u64::from(u16::from_be_bytes(len_be));
+            if seg_len < 2 {
+                return Err(Error::InvalidFormat("Broken JPEG segment length"));
+            }
+            if is_sof {
+                // precision(1) height(2) width(2)
+                let mut sof = [0u8; 5];
+                reader.read_exact(&mut sof)?;
+                let h = u32::from(u16::from_be_bytes([sof[1], sof[2]]));
+                let w = u32::from(u16::from_be_bytes([sof[3], sof[4]]));
+                return (w > 0 && h > 0)
+                    .then_some((w, h))
+                    .ok_or(Error::InvalidFormat("Zero-sized JPEG frame"));
+            }
+            reader.seek(SeekFrom::Current(seg_len as i64 - 2))?;
+            pos += seg_len - 2;
+        }
+        Err(Error::NotFound("no frame header in embedded image"))
+    }
+
     /// Extract the image data from a reader
     ///
     /// # Arguments
@@ -323,4 +389,70 @@ pub(crate) fn extract_maker_note_preview_info(
     }
 
     images
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal JPEG: SOI, a padding segment, then a frame header stating
+    /// `h x w`. The padding is there because a reader that assumes SOF comes
+    /// first passes without walking the chain.
+    fn jpeg(w: u16, h: u16) -> Vec<u8> {
+        let mut b = vec![0xFF, 0xD8];
+        b.extend_from_slice(&[0xFF, 0xE0, 0x00, 0x08, 1, 2, 3, 4, 5, 6]); // APP0
+        b.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 8]);                // SOF0
+        b.extend_from_slice(&h.to_be_bytes());
+        b.extend_from_slice(&w.to_be_bytes());
+        b.extend_from_slice(&[3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
+        b.extend_from_slice(&[0xFF, 0xD9]);
+        b
+    }
+
+    fn at(data: Vec<u8>, offset: u64) -> (Vec<u8>, EmbeddedSubImage) {
+        let mut file = vec![0u8; offset as usize];
+        let len = data.len() as u32;
+        file.extend_from_slice(&data);
+        (file, EmbeddedSubImage::new_thumbnail(len, offset))
+    }
+
+    /// The dimensions come from the JPEG's own header, because the container
+    /// usually does not state them -- a Sony ARW addresses three JPEGs and
+    /// sizes none of them.
+    #[test]
+    fn dimensions_come_from_the_frame_header() {
+        let (file, img) = at(jpeg(1616, 1080), 64);
+        let mut r = std::io::Cursor::new(file);
+        assert_eq!(img.dimensions(&mut r).unwrap(), (1616, 1080));
+    }
+
+    /// Stated dimensions win and cost no read at all.
+    #[test]
+    fn a_stated_size_is_not_re_read() {
+        let (_file, mut img) = at(jpeg(1616, 1080), 0);
+        img.width = Some(4);
+        img.height = Some(5);
+        // An empty reader proves nothing was read.
+        let mut r = std::io::Cursor::new(Vec::new());
+        assert_eq!(img.dimensions(&mut r).unwrap(), (4, 5));
+    }
+
+    /// The segment chain is attacker-controlled, so it is bounded by the
+    /// image's declared length rather than walked until something matches.
+    #[test]
+    fn a_chain_that_never_ends_is_refused() {
+        // A segment claiming to be longer than the image, and no frame header.
+        let mut data = vec![0xFF, 0xD8, 0xFF, 0xE0, 0xFF, 0xFF];
+        data.resize(64, 0);
+        let (file, img) = at(data, 0);
+        let mut r = std::io::Cursor::new(file);
+        assert!(img.dimensions(&mut r).is_err());
+    }
+
+    #[test]
+    fn something_that_is_not_a_jpeg_is_refused() {
+        let (file, img) = at(vec![0x00; 32], 0);
+        let mut r = std::io::Cursor::new(file);
+        assert!(img.dimensions(&mut r).is_err());
+    }
 }

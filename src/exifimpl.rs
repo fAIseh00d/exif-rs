@@ -352,7 +352,13 @@ impl Exif {
             if length == 0 {
                 continue;
             }
-            let dim = |tag| self.get_field(tag, ifd).and_then(|f| f.value.get_uint(0));
+            // **The IFD's own dimensions are NOT this image's.** An IFD
+            // describes ITS image, and the JPEG it addresses is a different
+            // one: IFD0 of a Sony ARW measures 6192x4128 -- the raw -- while
+            // the preview it points at is 1616x1080. Only IFD1 is genuinely
+            // about its thumbnail, and even there the JPEG's own header is the
+            // better authority. So nothing is stated here; `dimensions()`
+            // reads the SOF, which is about the image actually present.
             images.push(EmbeddedSubImage {
                 source: if ifd == In::THUMBNAIL {
                     EmbeddedSubImageSource::Thumbnail
@@ -362,8 +368,8 @@ impl Exif {
                 length,
                 offset: self.file_offset(u64::from(tiff_offset)),
                 ifd: Some(ifd),
-                width: dim(Tag::ImageWidth).or_else(|| dim(Tag::PixelXDimension)),
-                height: dim(Tag::ImageLength).or_else(|| dim(Tag::PixelYDimension)),
+                width: None,
+                height: None,
             });
         }
 

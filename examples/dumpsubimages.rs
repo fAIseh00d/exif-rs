@@ -70,11 +70,15 @@ fn main() {
                 .and_then(|_| reader.read_exact(&mut soi))
                 .is_ok()
                 && soi == [0xFF, 0xD8];
+            let dims = img
+                .dimensions(&mut reader)
+                .map_or_else(|e| format!("? ({e})"), |(w, h)| format!("{w}x{h}"));
             println!(
-                "  [{i}] {:<22} offset={:<12} {:>9} bytes  {}",
+                "  [{i}] {:<10} offset={:<10} {:>9} bytes  {:<12} {}",
                 img.source.name(),
                 img.offset,
                 img.length,
+                dims,
                 if ok { "JPEG" } else { "NOT a JPEG" },
             );
             if let Some(dir) = &extract {
