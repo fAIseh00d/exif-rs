@@ -61,17 +61,6 @@ pub enum EmbeddedSubImageSource {
     #[cfg(feature = "make_note")]
     MakerNotePreview3 = 5,
 
-    /// An image the CONTAINER addresses rather than any tag — a CR3's `PRVW`
-    /// and `THMB` boxes. Its offset is already a file offset.
-    ContainerBox = 8,
-
-    /// An image an IFD holds directly, addressed by its `StripOffsets` —
-    /// which is how a DNG stores its preview.
-    ///
-    /// **Not necessarily a JPEG.** A Canon DNG's is an uncompressed RGB
-    /// bitmap; a Pixel's is a JPEG. `compression` says which.
-    IfdStrip = 7,
-
     /// A JPEG addressed by `JPEGInterchangeFormat` in an IFD other than IFD1 —
     /// which is where a raw keeps its real preview.
     ///
@@ -82,6 +71,17 @@ pub enum EmbeddedSubImageSource {
     /// in IFD1, 539 KB in IFD0 and **7.3 MB in IFD2** — so looking only at
     /// IFD1 finds the smallest of them.
     IfdImage = 6,
+
+    /// An image an IFD holds directly, addressed by its `StripOffsets` —
+    /// which is how a DNG stores its preview.
+    ///
+    /// **Not necessarily a JPEG.** A Canon DNG's is an uncompressed RGB
+    /// bitmap; a Pixel's is a JPEG. `compression` says which.
+    IfdStrip = 7,
+
+    /// An image the CONTAINER addresses rather than any tag — a CR3's `PRVW`
+    /// and `THMB` boxes. Its offset is already a file offset.
+    ContainerBox = 8,
 }
 
 impl EmbeddedSubImageSource {
@@ -263,16 +263,43 @@ impl EmbeddedSubImage {
         // Walk the marker chain to a frame header. Bounded by the image's own
         // declared length so a malformed chain cannot read past it.
         let mut pos: u64 = 2;
+        let mut byte = [0u8; 1];
         while pos + 4 <= u64::from(self.length) {
-            let mut marker = [0u8; 2];
-            reader.read_exact(&mut marker)?;
-            pos += 2;
-            if marker[0] != 0xFF {
+            reader.read_exact(&mut byte)?;
+            pos += 1;
+            if byte[0] != 0xFF {
                 return Err(Error::InvalidFormat("Broken JPEG segment chain"));
             }
+            // **Any number of 0xFF fill bytes may precede a marker**, so the
+            // id is the first byte after them that is not itself 0xFF. Taking
+            // the byte straight after the first 0xFF reads a pad as the marker
+            // and the real marker as a segment length, and the walk desyncs.
+            loop {
+                reader.read_exact(&mut byte)?;
+                pos += 1;
+                if byte[0] != 0xFF {
+                    break;
+                }
+            }
+            let id = byte[0];
+            // **Standalone markers carry no length field.** Reading two bytes
+            // after one takes image content for a segment length.
+            if id == 0x01 || (0xD0..=0xD8).contains(&id) {
+                continue;
+            }
+            if id == 0xD9 {
+                return Err(Error::NotFound("no frame header in embedded image"));
+            }
+            // **Past the start of scan there are no more segments.** Entropy
+            // data is not a marker chain, and walking it as one can match a
+            // plausible frame header inside compressed bytes -- a confident
+            // wrong size, which is worse than an error.
+            if id == 0xDA {
+                return Err(Error::NotFound("no frame header before scan"));
+            }
             // SOF0..SOF15 carry the size; C4/C8/CC are not frame headers.
-            let is_sof = (0xC0..=0xCF).contains(&marker[1])
-                && !matches!(marker[1], 0xC4 | 0xC8 | 0xCC);
+            let is_sof = (0xC0..=0xCF).contains(&id)
+                && !matches!(id, 0xC4 | 0xC8 | 0xCC);
             let mut len_be = [0u8; 2];
             reader.read_exact(&mut len_be)?;
             pos += 2;
@@ -307,14 +334,22 @@ impl EmbeddedSubImage {
     where
         R: BufRead + Seek,
     {
-        use std::io::SeekFrom;
+        use std::io::{Read, SeekFrom};
 
         // Seek to the image start position
         reader.seek(SeekFrom::Start(self.offset))?;
 
-        // Read the image data
-        let mut data = vec![0u8; self.length as usize];
-        reader.read_exact(&mut data)?;
+        // **`length` is stated by the file, so it is not a size to trust.** A
+        // malformed or hostile header asks for up to 4 GB before a single byte
+        // is read, and `vec![0; n]` commits to all of it up front. Growing the
+        // buffer from the reader instead costs only what is really there, and
+        // a header longer than the file becomes an error rather than a
+        // four-gigabyte allocation.
+        let mut data = Vec::new();
+        reader.by_ref().take(u64::from(self.length)).read_to_end(&mut data)?;
+        if data.len() as u64 != u64::from(self.length) {
+            return Err(Error::InvalidFormat("Embedded image is truncated"));
+        }
 
         Ok(data)
     }
@@ -338,7 +373,7 @@ impl EmbeddedSubImage {
     /// let mut reader = BufReader::new(&file);
     /// let exif = Reader::new().read_from_container(&mut reader)?;
     ///
-    /// for img in exif.thumbnails() {
+    /// for img in exif.embedded_images() {
     ///     let mut file = File::open("image.jpg")?;
     ///     let mut reader = BufReader::new(&file);
     ///     img.save_to_file(&mut reader, format!("thumbnail_{}.jpg", img.source.name()))?;
@@ -486,6 +521,48 @@ mod tests {
         // An empty reader proves nothing was read.
         let mut r = std::io::Cursor::new(Vec::new());
         assert_eq!(img.dimensions(&mut r).unwrap(), (4, 5));
+    }
+
+    /// A stated length longer than the file is a lie, not an allocation.
+    #[test]
+    fn a_length_past_the_end_is_refused_not_allocated() {
+        let (file, mut img) = at(jpeg(64, 48), 0);
+        img.length = u32::MAX; // the whole point: 4 GB if believed
+        let mut r = std::io::Cursor::new(file);
+        assert!(img.extract_data(&mut r).is_err());
+    }
+
+    /// **Fill bytes are legal and must not desync the walk.** JPEG allows any
+    /// number of `0xFF` bytes before a marker, so `FF FF C0` is a frame header
+    /// with one pad byte. Reading the pad as the marker and the next two bytes
+    /// as a segment length walks off into the image.
+    #[test]
+    fn fill_bytes_before_a_marker_are_skipped() {
+        let mut data = vec![0xFF, 0xD8, 0xFF, 0xFF, 0xFF];
+        data.extend_from_slice(&[0xC0, 0x00, 0x11, 8]);
+        data.extend_from_slice(&300u16.to_be_bytes());
+        data.extend_from_slice(&400u16.to_be_bytes());
+        data.extend_from_slice(&[3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1, 0xFF, 0xD9]);
+        let (file, img) = at(data, 0);
+        let mut r = std::io::Cursor::new(file);
+        assert_eq!(img.dimensions(&mut r).unwrap(), (400, 300));
+    }
+
+    /// **Past the start of scan there are no more segments.** Entropy-coded
+    /// data is not a marker chain, and reading it as one can match `FFC0` in
+    /// compressed bytes and return a frame header that does not exist --
+    /// a wrong size reported confidently, which is worse than an error.
+    #[test]
+    fn scan_data_is_not_parsed_as_segments() {
+        let mut data = vec![0xFF, 0xD8];
+        data.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x08, 1, 1, 0, 0, 0x3F, 0]);
+        // Entropy bytes that look exactly like a 64x64 frame header.
+        data.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 8, 0, 64, 0, 64]);
+        data.extend_from_slice(&[0xFF, 0xD9]);
+        let (file, img) = at(data, 0);
+        let mut r = std::io::Cursor::new(file);
+        assert!(img.dimensions(&mut r).is_err(),
+                "scan data must not yield dimensions");
     }
 
     /// The segment chain is attacker-controlled, so it is bounded by the
