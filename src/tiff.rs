@@ -62,6 +62,34 @@ pub(crate) const RW2_EIGHTY_FIVE: u16 = 0x0055;
 /// the cap is a bound on a list the file controls, not a limit anyone meets.
 const MAX_SUB_IMAGES: usize = 8;
 
+/// Does `offset` plausibly hold a TIFF IFD?
+///
+/// Checked before descending a `SubIFDs` pointer, because such a pointer is
+/// the file's word and some files are wrong about it. The test is the
+/// structure's own arithmetic rather than a guess: an IFD states a count, then
+/// exactly that many 12-byte entries, each beginning with a tag and a TYPE --
+/// and the types are a closed set of thirteen. Data that is not an IFD fails
+/// on the first entry.
+fn looks_like_ifd<E>(data: &[u8], offset: usize) -> bool where E: Endian {
+    // The count itself must fit, and the entries it promises must too.
+    let Some(rest) = data.len().checked_sub(offset) else { return false };
+    if rest < 2 {
+        return false;
+    }
+    let count = E::loadu16(data, offset) as usize;
+    if count == 0 || rest < 2 + count * 12 + 4 {
+        return false;
+    }
+    // Every TIFF type is 1..=13 (BYTE through DOUBLE, including the BigTIFF
+    // additions this crate accepts). Checking the first few entries is enough:
+    // arbitrary bytes clear the length test often enough to matter, and never
+    // clear this one.
+    (0..count.min(4)).all(|i| {
+        let t = E::loadu16(data, offset + 2 + i * 12 + 2);
+        (1..=13).contains(&t)
+    })
+}
+
 /// The largest RW2 IFD0 tag number worth capturing (`0x0017`, ISO).
 const RW2_TAG_MAX: usize = 0x17;
 /// Panasonic's IFD0 tags. A RW2 carries NO `ImageWidth`/`PixelXDimension` and
@@ -398,6 +426,18 @@ impl Parser {
                 // attacker-controlled, so it is bounded rather than trusted.
                 for i in 0..MAX_SUB_IMAGES {
                     let Some(ofs) = ptr.get_uint(i) else { break };
+                    // **A SubIFDs pointer does not always point at an IFD.**
+                    // Sony's first DSLR, the A100 (ARW 1.0, Minolta lineage),
+                    // sets tag 0x014A to 98304, which is raw image data: read
+                    // as an IFD it declares 7520 entries whose types are 58818
+                    // and 21228. Parsing it produced 7515 junk fields -- 99 %
+                    // of everything the file appeared to contain -- and five
+                    // "Truncated field value" errors that aborted any caller
+                    // not using `continue_on_error`. exiftool declines to
+                    // follow the same pointer.
+                    if !looks_like_ifd::<E>(data, ofs as usize) {
+                        continue;
+                    }
                     let sub = In::SUB_IMAGE.0 + u16::try_from(i).unwrap_or(0);
                     self.parse_ifd::<E>(data, ofs as usize, Context::Tiff, sub,
                                         base_offset)
@@ -834,6 +874,40 @@ mod tests {
         let (fields, _le) = parse_exif(&f).unwrap();
         assert_eq!(field_of(&fields, Tag::ImageWidth), None);
         assert_eq!(field_of(&fields, Tag::ImageLength), None);
+    }
+
+    /// **A `SubIFDs` pointer aimed at data that is not an IFD.** Sony's A100
+    /// does exactly this: tag 0x014A holds 98304, which is raw image data.
+    /// Read as an IFD it declares 7520 entries of type 58818, and parsing them
+    /// produced 7515 junk fields and five truncation errors -- so the file
+    /// appeared to hold 7584 tags where exiftool sees 244, and any caller
+    /// without `continue_on_error` got nothing at all.
+    #[test]
+    fn a_sub_ifd_pointer_into_image_data_is_declined() {
+        // IFD0 with a SubIFDs pointer at the payload appended after it.
+        let ifd0_at = 8usize;
+        let entries = 1usize;
+        let junk_at = ifd0_at + 2 + entries * 12 + 4;
+        let mut f = vec![0x49, 0x49];
+        f.extend_from_slice(&TIFF_FORTY_TWO.to_le_bytes());
+        f.extend_from_slice(&(ifd0_at as u32).to_le_bytes());
+        f.extend_from_slice(&(entries as u16).to_le_bytes());
+        f.extend_from_slice(&0x014au16.to_le_bytes());
+        f.extend_from_slice(&4u16.to_le_bytes());          // LONG
+        f.extend_from_slice(&1u32.to_le_bytes());
+        f.extend_from_slice(&(junk_at as u32).to_le_bytes());
+        f.extend_from_slice(&0u32.to_le_bytes());          // no next IFD
+        assert_eq!(f.len(), junk_at);
+        // The A100's own bytes at 98304: a count of 7520 and types that are
+        // not TIFF types.
+        f.extend_from_slice(&[0x60, 0x1d, 0x02, 0x85, 0xc2, 0xe5, 0xaa, 0x08,
+                              0x8a, 0x6c, 0xd2, 0x85, 0xca, 0xd1, 0x81, 0x00]);
+        f.resize(junk_at + 4096, 0);
+
+        let (fields, _le) = parse_exif(&f).expect("a bad pointer must not fail the file");
+        // Nothing may come from the junk.
+        assert!(fields.iter().all(|f| f.ifd_num != In::SUB_IMAGE),
+                "no field may come from data that is not an IFD");
     }
 
     /// A DNG-shaped TIFF: IFD0 is a thumbnail carrying a `SubIFDs` pointer,
