@@ -107,7 +107,7 @@ impl Reader {
     /// Parses the Exif attributes from raw Exif data.
     /// If an error occurred, `exif::Error` is returned.
     pub fn read_raw(&self, data: Vec<u8>) -> Result<Exif, Error> {
-        self.read_raw_with_extra(data, Vec::new(), 0)
+        self.read_raw_with_extra(data, Vec::new(), 0, Vec::new())
     }
 
     /// `read_raw`, plus fields the CONTAINER states that its Exif cannot.
@@ -116,13 +116,15 @@ impl Reader {
     /// describes the JPEG, while the raw image's own size lives in the RAF's
     /// CFA header. The fields are appended as an ordinary sub-image IFD, so a
     /// RAF answers `get_field(ImageWidth, In::SUB_IMAGE)` exactly as a DNG does.
-    fn read_raw_with_extra(&self, data: Vec<u8>, extra: Vec<Field>, tiff_base: u64)
+    fn read_raw_with_extra(&self, data: Vec<u8>, extra: Vec<Field>, tiff_base: u64,
+                           container_images: Vec<(u64, u32)>)
                            -> Result<Exif, Error> {
         let mut parser = tiff::Parser::new();
-        parser.continue_on_error = self.continue_on_error.then(|| Vec::new());
+        parser.continue_on_error = self.continue_on_error.then(Vec::new);
         parser.parse(&data)?;
         parser.entries.extend(extra.into_iter().map(IfdEntry::from_parsed_field));
-        let exif = Exif::new_at(data, parser.entries, parser.little_endian, tiff_base);
+        let mut exif = Exif::new_at(data, parser.entries, parser.little_endian, tiff_base);
+        exif.set_container_images(container_images);
         match parser.continue_on_error {
             Some(v) if !v.is_empty() =>
                 Err(Error::PartialResult(PartialResult::new(exif, v))),
@@ -133,13 +135,13 @@ impl Reader {
     /// Parses the Exif attributes from raw Exif data with optional MPF data.
     /// If an error occurred, `exif::Error` is returned.
     #[cfg(feature = "mpf")]
-    fn read_raw_with_mpf(&self, exif_data: Vec<u8>, mpf_data: Option<Vec<u8>>, mpf_app2_offset: u64, extra: Vec<Field>, tiff_base: u64) -> Result<Exif, Error> {
+    fn read_raw_with_mpf(&self, exif_data: Vec<u8>, mpf_data: Option<Vec<u8>>, mpf_app2_offset: u64, extra: Vec<Field>, tiff_base: u64, container_images: Vec<(u64, u32)>) -> Result<Exif, Error> {
         let mut parser = tiff::Parser::new();
         parser.continue_on_error = self.continue_on_error.then(|| Vec::new());
         parser.parse(&exif_data)?;
         parser.entries.extend(extra.into_iter().map(IfdEntry::from_parsed_field));
 
-        let exif = if let Some(mut mpf_buf) = mpf_data {
+        let mut exif = if let Some(mut mpf_buf) = mpf_data {
             // Parse MPF data and convert offsets using MPF module
             crate::mpf::parse_mpf(&mut mpf_buf, mpf_app2_offset)?;
 
@@ -149,6 +151,7 @@ impl Reader {
         } else {
             Exif::new_at(exif_data, parser.entries, parser.little_endian, tiff_base)
         };
+        exif.set_container_images(container_images);
 
         match parser.continue_on_error {
             Some(v) if !v.is_empty() =>
@@ -215,6 +218,8 @@ impl Reader {
         // the JPEG. What the RAW image measures is stated only in the RAF's
         // own CFA header, so it is carried out separately and attached below.
         let mut raf_raw_image: Option<raf::RafRawImage> = None;
+        // Images the container addresses directly, in FILE offsets.
+        let mut container_images: Vec<(u64, u32)> = Vec::new();
         // Where the TIFF header these fields describe sits in the file. It is
         // a property of the CONTAINER, so each branch below states it.
         let mut tiff_base: u64 = 0;
@@ -263,6 +268,10 @@ impl Reader {
             // its offsets need the JPEG's position as well as the JPEG's own
             // header size.
             tiff_base = raf.jpeg_offset + crate::exifimpl::JPEG_TIFF_BASE;
+            // The embedded JPEG is the body's full-size rendering, addressed
+            // by the RAF header and by no tag at all -- without this a Fuji
+            // raw offers only its 8.8 KB IFD1 thumbnail.
+            container_images.push((raf.jpeg_offset, raf.jpeg_length));
         } else if webp::is_webp(&buf) {
             buf = webp::get_exif_attr(&mut buf.chain(reader))?;
         } else {
@@ -272,11 +281,13 @@ impl Reader {
         #[cfg(feature = "mpf")]
         {
             self.read_raw_with_mpf(buf, mpf_data, mpf_app2_offset,
-                                   raf_sub_image(raf_raw_image), tiff_base)
+                                   raf_sub_image(raf_raw_image), tiff_base,
+                                   container_images)
         }
         #[cfg(not(feature = "mpf"))]
         {
-            self.read_raw_with_extra(buf, raf_sub_image(raf_raw_image), tiff_base)
+            self.read_raw_with_extra(buf, raf_sub_image(raf_raw_image), tiff_base,
+                                     container_images)
         }
     }
 }

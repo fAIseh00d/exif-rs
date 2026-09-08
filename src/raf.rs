@@ -82,6 +82,10 @@ pub(crate) struct RafContents {
     /// to a TIFF header inside that JPEG**, so without this they point into
     /// nothing.
     pub jpeg_offset: u64,
+    /// Its length. The JPEG is the body's own full-size rendering — 5.4 MB on
+    /// an X-T30 III against an 8.8 KB IFD1 thumbnail — so it is worth
+    /// reporting as an embedded image and not merely reading Exif out of.
+    pub jpeg_length: u32,
     pub raw_image: Option<RafRawImage>,
 }
 
@@ -170,6 +174,7 @@ where R: io::BufRead + io::Seek {
     Ok(RafContents {
         exif: crate::jpeg::get_exif_attr(&mut io::Cursor::new(jpeg))?,
         jpeg_offset: u64::from(offset),
+        jpeg_length: length,
         raw_image,
     })
 }
