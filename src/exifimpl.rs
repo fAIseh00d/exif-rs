@@ -89,6 +89,15 @@ pub struct Exif {
     // MakerNote vendor detected from the data, or error if not found.
     #[cfg(feature = "make_note")]
     maker_note_vendor: Result<MakerNoteVendor, crate::Error>,
+    // Where the MakerNote's own data begins, relative to the TIFF header.
+    //
+    // A MakerNote is a container inside a container, and the same rule applies
+    // one level deeper: **offsets it states count from ITS start, not the
+    // TIFF's.** An Olympus E-M5 II puts `PreviewImageStart` at 48652 with the
+    // MakerNote beginning 3572 bytes into the file -- 52224, where the JPEG
+    // actually is.
+    #[cfg(feature = "make_note")]
+    maker_note_offset: u32,
     // MPF fields parsed from APP2 segment.
     // HashMap for quick access by tag number.
     #[cfg(feature = "mpf")]
@@ -110,7 +119,8 @@ impl Exif {
 
         // Try to parse MakerNote if present
         #[cfg(feature = "make_note")]
-        let (maker_note_fields, maker_note_vendor) = Self::parse_maker_note_internal(&buf, &entries, little_endian);
+        let (maker_note_fields, maker_note_vendor, maker_note_offset) =
+            Self::parse_maker_note_internal(&buf, &entries, little_endian);
 
         Self {
             buf: buf,
@@ -122,6 +132,8 @@ impl Exif {
             maker_note_fields,
             #[cfg(feature = "make_note")]
             maker_note_vendor,
+            #[cfg(feature = "make_note")]
+            maker_note_offset,
             #[cfg(feature = "mpf")]
             mpf_fields: HashMap::new(),
         }
@@ -158,7 +170,8 @@ impl Exif {
 
         // Try to parse MakerNote if present
         #[cfg(feature = "make_note")]
-        let (maker_note_fields, maker_note_vendor) = Self::parse_maker_note_internal(&buf, &entries, little_endian);
+        let (maker_note_fields, maker_note_vendor, maker_note_offset) =
+            Self::parse_maker_note_internal(&buf, &entries, little_endian);
 
         // Parse MPF fields
         let mpf_fields = Self::parse_mpf_internal(&mpf_buf, mpf_app2_offset, little_endian);
@@ -173,6 +186,8 @@ impl Exif {
             maker_note_fields,
             #[cfg(feature = "make_note")]
             maker_note_vendor,
+            #[cfg(feature = "make_note")]
+            maker_note_offset,
             mpf_fields,
         }
     }
@@ -207,19 +222,19 @@ impl Exif {
         buf: &[u8],
         entries: &[IfdEntry],
         little_endian: bool,
-    ) -> (HashMap<MakerTag, MakerNoteField>, Result<MakerNoteVendor, crate::Error>) {
+    ) -> (HashMap<MakerTag, MakerNoteField>, Result<MakerNoteVendor, crate::Error>, u32) {
         // Find MakerNote field
         let maker_note_entry = entries.iter()
             .find(|e| e.ifd_num_tag().1 == Tag::MakerNote);
 
         let Some(maker_note_entry) = maker_note_entry else {
-            return (HashMap::new(), Err(crate::Error::MakerNoteNotFound));
+            return (HashMap::new(), Err(crate::Error::MakerNoteNotFound), 0);
         };
 
         // Get MakerNote field value
         let field = maker_note_entry.ref_field(buf, little_endian);
         let crate::value::Value::Undefined(ref data, offset) = field.value else {
-            return (HashMap::new(), Err(crate::Error::MakerNoteNotFound));
+            return (HashMap::new(), Err(crate::Error::MakerNoteNotFound), 0);
         };
 
         // Get Make field for vendor detection
@@ -243,14 +258,14 @@ impl Exif {
                     let map = fields.into_iter()
                         .map(|f| (f.tag, f))
                         .collect();
-                    (map, Ok(vendor))
+                    (map, Ok(vendor), offset)
                 }
-                Err(e) => (HashMap::new(), Err(e))
+                Err(e) => (HashMap::new(), Err(e), offset)
             }
         }
         #[cfg(not(feature = "make_note"))]
         {
-            (HashMap::new(), Err(crate::Error::NotFound("MakerNote parsing disabled")))
+            (HashMap::new(), Err(crate::Error::NotFound("MakerNote parsing disabled")), 0)
         }
     }
 
@@ -381,6 +396,44 @@ impl Exif {
                 &self.maker_note_vendor,
             );
             images.extend(maker_note_images);
+
+            // Olympus keeps its full-size preview in the CameraSettings
+            // subdirectory rather than the MakerNote's top level -- 975 KB on
+            // an E-M5 II, against an 8 KB thumbnail. `extract_maker_note_
+            // preview_info` reads the two top-level variants and left this one
+            // as a TODO because the subdirectory was not parsed then; it is
+            // now, so the fields are simply there to be read.
+            //
+            // **Its offsets count from the MakerNote's own start**, not the
+            // TIFF header: 48652 stated, with the MakerNote 3572 bytes into
+            // the file, is 52224 -- which is where the SOI actually is.
+            const OLYMPUS_CS_PREVIEW_START: u16 = 0x0101;
+            const OLYMPUS_CS_PREVIEW_LENGTH: u16 = 0x0102;
+            let cs = |number: u16| {
+                self.maker_note_fields.values().find(|f| {
+                    f.tag.number() == number
+                        && f.tag.vendor() == MakerNoteVendor::OlympusCameraSettings
+                })
+            };
+            if let (Some(start), Some(len)) =
+                (cs(OLYMPUS_CS_PREVIEW_START), cs(OLYMPUS_CS_PREVIEW_LENGTH))
+            {
+                if let (Some(start), Some(len)) =
+                    (start.value.get_uint(0), len.value.get_uint(0))
+                {
+                    if len > 0 {
+                        images.push(EmbeddedSubImage {
+                            source: EmbeddedSubImageSource::MakerNotePreview3,
+                            length: len,
+                            offset: self.file_offset(u64::from(
+                                self.maker_note_offset.saturating_add(start))),
+                            ifd: None,
+                            width: None,
+                            height: None,
+                        });
+                    }
+                }
+            }
         }
 
         // Try to get MPF images from MPF fields
