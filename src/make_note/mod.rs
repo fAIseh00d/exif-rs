@@ -551,8 +551,75 @@ mod tests {
     }
 
 
+    /// The recovery path on a FLAT vendor IFD -- which is what a MakerNote
+    /// is. Split out of `continue_on_error` because those cases pass and the
+    /// Exif-pointer ones do not; see that test for why.
     #[test]
-    #[ignore] // FIXME: This test was already failing before log addition
+    fn continue_on_error_flat_ifd() {
+        macro_rules! define_test {
+            {
+                data: $data:expr,
+                fields: [$($fields:pat),*],
+                errors: [$first_error:pat $(, $rest_errors:pat)*]
+            } => {
+                let data = $data;
+                let mut parser = MakerNoteParser::new();
+                assert_err_pat!(parser.parse(data, None), $first_error);
+                let mut parser = MakerNoteParser::new();
+                parser.continue_on_error = Some(Vec::new());
+                parser.parse(data, None).unwrap();
+                let mut entries = parser.entries.iter();
+                $(
+                    assert_pat!(entries.next().unwrap()
+                                       .0.ref_field(data, parser.little_endian),
+                                $fields);
+                )*
+                assert_pat!(entries.next(), None);
+                let mut errors =
+                    parser.continue_on_error.as_ref().unwrap().iter();
+                assert_pat!(errors.next().unwrap(), $first_error);
+                $(
+                    assert_pat!(errors.next().unwrap(), $rest_errors);
+                )*
+                assert_pat!(errors.next(), None);
+            }
+        }
+        // 0th IFD is missing.
+        define_test! {
+            data: b"MM\0\x2a\0\0\0\x08",
+            fields: [],
+            errors: [Error::InvalidFormat("Truncated IFD count")]
+        }
+        // 2nd entry is truncated.
+        define_test! {
+            data: b"MM\0\x2a\0\0\0\x08\
+                    \0\x02\x01\x00\0\x03\0\0\0\x01\0\x14\0\0\
+                          \x01\x01\0\x03\0\0\0\x01\0\x15\0",
+            fields: [Field { tag: Tag::ImageWidth, ifd_num: In(0),
+                             value: Value::Short(_) }],
+            errors: [Error::InvalidFormat("Truncated IFD")]
+        }
+        // 1st entry broken.
+        define_test! {
+            data: b"MM\0\x2a\0\0\0\x08\
+                    \0\x02\x01\x00\0\x03\0\0\0\x03\0\0\0\x21\
+                          \x01\x01\0\x03\0\0\0\x01\0\x15\0\0\
+                          \0\0\0\0",
+            fields: [Field { tag: Tag::ImageLength, ifd_num: In(0),
+                             value: Value::Short(_) }],
+            errors: [Error::InvalidFormat("Truncated field value")]
+        }
+    }
+
+    /// **This is upstream's TIFF recovery test pointed at the MakerNote
+    /// parser**, and the cases that fail are the ones that expect an
+    /// `ExifIFDPointer` to be followed. A MakerNote is a flat vendor IFD, so
+    /// not descending is arguably correct and the assertion is inherited
+    /// rather than designed. Left ignored until someone decides which
+    /// behaviour is intended; the flat cases run as
+    /// `continue_on_error_flat_ifd` and are the ones we depend on.
+    #[test]
+    #[ignore = "expects TIFF Exif-IFD descent from a flat MakerNote parser"]
     fn continue_on_error() {
         macro_rules! define_test {
             {
