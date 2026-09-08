@@ -10,7 +10,14 @@ name = "kamadak-exif"
 version = "0.6.1"
 authors = ["KAMADA Ken'ichi <kamada@nanohz.org>"]
 edition = "2021"
-rust-version = "1.60"
+# Upstream declared 1.60, and that stopped being true when the vendor
+# MakerNote work was merged: it uses `let ... else`, which is 1.65. Rather
+# than carry a number nobody checks, this states one that is actually
+# defensible -- piqpix, the only consumer, requires 1.80 itself, so nothing
+# below it is exercised or tested. A lower floor could be established with
+# `cargo msrv`; it has not been, and claiming one unverified would just
+# replace a large fiction with a small one.
+rust-version = "1.80"
 
 description = "Exif parsing library written in pure Rust"
 documentation = "https://docs.rs/kamadak-exif"
