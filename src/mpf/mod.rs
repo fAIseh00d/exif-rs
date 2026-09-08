@@ -152,7 +152,16 @@ fn convert_mpf_offsets_endian<E: Endian + 'static>(mpf_buf: &mut [u8], app2_offs
                 let mp_entry_offset = data_offset + j * 16 + 8; // Offset to ImageDataOffset field
                 if mp_entry_offset + 4 <= mpf_buf.len() {
                     let relative_offset = E::loadu32(mpf_buf, mp_entry_offset);
-                    let absolute_offset = (app2_offset + relative_offset as u64) as u32;
+                    // The field being rewritten is 32-bit, so an image that
+                    // lands past 4 GB cannot be addressed by it. `as u32`
+                    // would wrap and write a plausible offset pointing at the
+                    // wrong place; leaving the entry alone keeps it relative,
+                    // which a caller can still detect.
+                    let Ok(absolute_offset) =
+                        u32::try_from(app2_offset + u64::from(relative_offset))
+                    else {
+                        continue;
+                    };
 
                     // Write back absolute offset with correct endianness
                     let bytes = if is_little_endian {
