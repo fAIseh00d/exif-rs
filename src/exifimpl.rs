@@ -28,12 +28,11 @@ use std::collections::HashMap;
 
 use crate::tag::Tag;
 use crate::tiff::{Field, IfdEntry, In, ProvideUnit};
-use crate::subimg::EmbeddedSubImage;
+use crate::subimg::{EmbeddedSubImage, EmbeddedSubImageSource};
 #[cfg(feature = "make_note")]
 use crate::make_note::maker_tag::{MakerNoteField, MakerNoteVendor, MakerTag};
 #[cfg(feature = "mpf")]
 use crate::mpf::mpf_tag::{MpfField, MpfTag};
-use crate::value::Value;
 
 /// Where the TIFF header sits in an ordinary JPEG: SOI (2) + APP1 marker (2) +
 /// length (2) + `"Exif\0\0"` (6).
@@ -325,30 +324,47 @@ impl Exif {
     pub fn thumbnails(&self) -> Vec<EmbeddedSubImage> {
         let mut images = Vec::new();
 
-        // Try to get IFD1 thumbnail
-        if let (Some(offset_field), Some(length_field)) = (
-            self.get_field(Tag::JPEGInterchangeFormat, In::THUMBNAIL),
-            self.get_field(Tag::JPEGInterchangeFormatLength, In::THUMBNAIL),
-        ) {
-            if let (Value::Long(ref offset_val), Value::Long(ref length_val)) =
-                (&offset_field.value, &length_field.value)
-            {
-                if !offset_val.is_empty() && !length_val.is_empty() {
-                    let tiff_offset = offset_val[0] as u64;
-                    let length = length_val[0];
-                    if length > 0 {
-                        // JPEGInterchangeFormat offset is relative to TIFF structure start
-                        // For JPEG files: add 12 bytes (SOI + APP1 marker + length + "Exif\0\0")
-                        // For TIFF files: use offset as-is
-                        //
-                        // To detect JPEG vs TIFF: In TIFF files, buf contains the entire file,
-                        // so thumbnail data would be within buf. In JPEG files, buf only contains
-                        // the Exif segment, and thumbnail is elsewhere in the file.
-                        let offset = self.file_offset(tiff_offset);
-                        images.push(EmbeddedSubImage::new_thumbnail(length, offset));
-                    }
-                }
+        // **Every IFD, not just IFD1.** `JPEGInterchangeFormat` (0x0201) and
+        // its length (0x0202) are ONE tag pair that appears in several IFDs,
+        // and the familiar names are labels for the IFD rather than different
+        // tags: IFD1 is what everyone calls the thumbnail, IFD0 the preview, a
+        // further chained IFD or a sub-image the full-size JPEG. A Sony ARW
+        // carries all three at once -- 10 KB in IFD1, 539 KB in IFD0 and
+        // **7.3 MB in IFD2** -- so reading IFD1 alone finds the smallest.
+        //
+        // Each one is reported with the IFD that stated it and with that IFD's
+        // own dimensions where present, because "which of these is the
+        // photograph" is a question the caller has to be able to answer.
+        let chained = (0..8u16).map(In);
+        let sub_images = (0..8u16).map(|i| In(In::SUB_IMAGE.0 + i));
+        for ifd in chained.chain(sub_images) {
+            let (Some(offset_field), Some(length_field)) = (
+                self.get_field(Tag::JPEGInterchangeFormat, ifd),
+                self.get_field(Tag::JPEGInterchangeFormatLength, ifd),
+            ) else {
+                continue;
+            };
+            let (Some(tiff_offset), Some(length)) =
+                (offset_field.value.get_uint(0), length_field.value.get_uint(0))
+            else {
+                continue;
+            };
+            if length == 0 {
+                continue;
             }
+            let dim = |tag| self.get_field(tag, ifd).and_then(|f| f.value.get_uint(0));
+            images.push(EmbeddedSubImage {
+                source: if ifd == In::THUMBNAIL {
+                    EmbeddedSubImageSource::Thumbnail
+                } else {
+                    EmbeddedSubImageSource::IfdImage
+                },
+                length,
+                offset: self.file_offset(u64::from(tiff_offset)),
+                ifd: Some(ifd),
+                width: dim(Tag::ImageWidth).or_else(|| dim(Tag::PixelXDimension)),
+                height: dim(Tag::ImageLength).or_else(|| dim(Tag::PixelYDimension)),
+            });
         }
 
         // Try to get MakerNote preview images
@@ -507,11 +523,11 @@ impl<'a> ProvideUnit<'a> for &'a Exif {
 
 #[cfg(test)]
 mod tests {
+    use crate::value::Value;
     use std::fs::File;
     use std::io::BufReader;
     use crate::reader::Reader;
-    use crate::value::Value;
-
+    
 /// Where the TIFF header sits in an ordinary JPEG: SOI (2) + APP1 marker (2) +
 /// length (2) + `"Exif\0\0"` (6).
 ///

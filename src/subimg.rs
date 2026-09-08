@@ -60,6 +60,17 @@ pub enum EmbeddedSubImageSource {
     /// MakerNote preview image 3 (Olympus: PreviewImageStart3 CameraSettings 0x0101 / PreviewImageLength3 0x0102)
     #[cfg(feature = "make_note")]
     MakerNotePreview3 = 5,
+
+    /// A JPEG addressed by `JPEGInterchangeFormat` in an IFD other than IFD1 —
+    /// which is where a raw keeps its real preview.
+    ///
+    /// **They are all the same tag.** `0x0201`/`0x0202` in IFD1 is what
+    /// everyone calls the thumbnail, in IFD0 the preview, in a further chained
+    /// IFD or a sub-image the full-size JPEG; the names are labels for the IFD
+    /// rather than distinct tags. A Sony ARW carries all three at once — 10 KB
+    /// in IFD1, 539 KB in IFD0 and **7.3 MB in IFD2** — so looking only at
+    /// IFD1 finds the smallest of them.
+    IfdImage = 6,
 }
 
 impl EmbeddedSubImageSource {
@@ -76,6 +87,7 @@ impl EmbeddedSubImageSource {
             EmbeddedSubImageSource::MakerNotePreview2 => "MakerNotePreview2",
             #[cfg(feature = "make_note")]
             EmbeddedSubImageSource::MakerNotePreview3 => "MakerNotePreview3",
+            EmbeddedSubImageSource::IfdImage => "IfdImage",
         }
     }
 }
@@ -95,6 +107,21 @@ pub struct EmbeddedSubImage {
 
     /// Absolute offset from the start of the file
     pub offset: u64,
+
+    /// Which IFD stated it, when one did — `In::PRIMARY` for a preview,
+    /// `In::THUMBNAIL` for a thumbnail, `In::SUB_IMAGE`+n for a sub-image.
+    pub ifd: Option<crate::tiff::In>,
+
+    /// The image's own dimensions, **where the file states them**.
+    ///
+    /// This is the field that lets a caller tell one embedded image from
+    /// another. Without it "the dimensions" of a raw is ambiguous, and picking
+    /// the wrong answer is exactly the bug this crate had: a DNG's IFD0 is a
+    /// 256x171 thumbnail, so `ImageWidth` there is the thumbnail's size, not
+    /// the photograph's. `None` means the file did not say — the JPEG's own
+    /// SOF marker would, but reading it is a decode-side concern.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 impl EmbeddedSubImage {
@@ -104,6 +131,9 @@ impl EmbeddedSubImage {
             source: EmbeddedSubImageSource::Primary,
             length,
             offset,
+            ifd: None,
+            width: None,
+            height: None,
         }
     }
 
@@ -113,6 +143,9 @@ impl EmbeddedSubImage {
             source: EmbeddedSubImageSource::Thumbnail,
             length,
             offset,
+            ifd: None,
+            width: None,
+            height: None,
         }
     }
 
@@ -123,6 +156,9 @@ impl EmbeddedSubImage {
             source: EmbeddedSubImageSource::Mpf,
             length,
             offset,
+            ifd: None,
+            width: None,
+            height: None,
         }
     }
 
@@ -137,6 +173,9 @@ impl EmbeddedSubImage {
             source,
             length,
             offset,
+            ifd: None,
+            width: None,
+            height: None,
         }
     }
 

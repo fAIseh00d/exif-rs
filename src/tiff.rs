@@ -895,6 +895,42 @@ mod tests {
         assert_eq!(at(Tag::ImageLength, In::SUB_IMAGE), Some(4120));
     }
 
+    /// **The same tag in three IFDs is three different images.** IFD1's
+    /// `JPEGInterchangeFormat` is the thumbnail everyone reads; IFD0's is the
+    /// preview and a further IFD's the full-size JPEG, and a Sony ARW carries
+    /// all three. Reading only IFD1 finds the smallest of them — 10 KB where
+    /// a 7.3 MB full-size JPEG is sitting in IFD2.
+    #[test]
+    fn every_ifd_that_addresses_a_jpeg_is_reported() {
+        // IFD0 -> preview at 900 (60 bytes), IFD1 -> thumbnail at 700 (30).
+        let mut f = vec![0x49, 0x49];
+        f.extend_from_slice(&TIFF_FORTY_TWO.to_le_bytes());
+        f.extend_from_slice(&8u32.to_le_bytes());
+        let long = |f: &mut Vec<u8>, tag: u16, v: u32| {
+            f.extend_from_slice(&tag.to_le_bytes());
+            f.extend_from_slice(&4u16.to_le_bytes());
+            f.extend_from_slice(&1u32.to_le_bytes());
+            f.extend_from_slice(&v.to_le_bytes());
+        };
+        let ifd1_at = 8 + 2 + 2 * 12 + 4;
+        f.extend_from_slice(&2u16.to_le_bytes());
+        long(&mut f, 0x0201, 900);
+        long(&mut f, 0x0202, 60);
+        f.extend_from_slice(&(ifd1_at as u32).to_le_bytes());
+        assert_eq!(f.len(), ifd1_at);
+        f.extend_from_slice(&2u16.to_le_bytes());
+        long(&mut f, 0x0201, 700);
+        long(&mut f, 0x0202, 30);
+        f.extend_from_slice(&0u32.to_le_bytes());
+
+        let exif = crate::Reader::new().read_raw(f).unwrap();
+        let mut found: Vec<(u64, u32)> =
+            exif.thumbnails().iter().map(|i| (i.offset, i.length)).collect();
+        found.sort_unstable();
+        assert_eq!(found, vec![(700, 30), (900, 60)],
+                   "both IFDs address an image; only one was reported");
+    }
+
     /// The sub-image base sits above the chained IFDs (capped at 8) and above
     /// `In::MPF`, so nothing it writes can land on an existing allocation.
     #[test]
