@@ -975,7 +975,7 @@ mod tests {
         f.extend_from_slice(&TIFF_FORTY_TWO.to_le_bytes());
         f.extend_from_slice(&(ifd_at as u32).to_le_bytes());
         f.extend_from_slice(&entries.to_le_bytes());
-        let mut put = |f: &mut Vec<u8>, tag: u16, typ: u16, cnt: u32, val: u32| {
+        let put = |f: &mut Vec<u8>, tag: u16, typ: u16, cnt: u32, val: u32| {
             f.extend_from_slice(&tag.to_le_bytes());
             f.extend_from_slice(&typ.to_le_bytes());
             f.extend_from_slice(&cnt.to_le_bytes());

@@ -65,6 +65,12 @@ const MAX_CFA_HEADER: u32 = 1 << 20;
 /// The header bytes needed to reach both pointer pairs.
 const HEADER_LEN: usize = 100;
 
+// The two pointer pairs are read as fixed slices of `header`, so their range
+// must be inside it. `CFA_PTR_AT + 8` is exactly `HEADER_LEN` today: without
+// this, shrinking the header would still compile and panic on the first file.
+const _: () = assert!(JPEG_PTR_AT as usize + 8 <= HEADER_LEN);
+const _: () = assert!(CFA_PTR_AT + 8 <= HEADER_LEN);
+
 /// A JPEG larger than this is not a preview; refuse rather than allocate it.
 const MAX_EMBEDDED_JPEG: u32 = 64 * 1024 * 1024;
 

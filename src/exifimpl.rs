@@ -723,15 +723,7 @@ mod tests {
     use std::fs::File;
     use std::io::BufReader;
     use crate::reader::Reader;
-    
-/// Where the TIFF header sits in an ordinary JPEG: SOI (2) + APP1 marker (2) +
-/// length (2) + `"Exif\0\0"` (6).
-///
-/// **An assumption, and a documented one**: it holds when APP1 is the first
-/// segment, which is the overwhelming majority, but a file with a JFIF APP0
-/// ahead of it puts the header further in. Tracking the segment's real
-/// position through the JPEG reader is the proper fix.
-pub(crate) const JPEG_TIFF_BASE: u64 = 12;
+
     use super::*;
 
     #[test]
