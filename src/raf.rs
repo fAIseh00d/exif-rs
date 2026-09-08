@@ -55,9 +55,25 @@ const JPEG_PTR_AT: u64 = 84;
 /// Where the CFA header's offset and length sit, immediately after the JPEG's.
 const CFA_PTR_AT: usize = 92;
 
-/// `RawImageCroppedSize` in the CFA header directory — the dimensions the body
-/// actually outputs. **Stored HEIGHT FIRST.**
+/// `RawImageCroppedSize` in the CFA header directory. **Stored HEIGHT FIRST.**
+///
+/// **Halved on a Super-CCD body.** Its photosites sit on a 45°-rotated
+/// honeycomb, and the value describes that array rather than the picture: a
+/// FinePix S2Pro states 4256x1424 for a frame it outputs at 4256x2848, and an
+/// S5000 states 2816x1060 for 2816x2120. exiftool echoes the halved figure
+/// too, so it is the file talking, not a misread.
 const RAF_CROPPED_SIZE: u16 = 0x0111;
+
+/// The output size again, **WIDTH FIRST and already correct** — including on
+/// the Super-CCD bodies that carry it, where it does not need the doubling
+/// above (an E550 states 4048x3036 here against 4048x1520 in 0x0111).
+///
+/// Undocumented: it is in neither exiftool's RAF table nor the public notes,
+/// and was found by dumping the directory across every RAF in the corpus. It
+/// is present on all but the two oldest bodies (S2Pro, S5000) and agrees with
+/// 0x0111 exactly wherever that tag is not halved — which is what makes it
+/// trustworthy rather than merely convenient.
+const RAF_OUTPUT_SIZE: u16 = 0x0112;
 
 /// A CFA header larger than this is not a header; refuse rather than allocate.
 const MAX_CFA_HEADER: u32 = 1 << 20;
@@ -120,20 +136,32 @@ fn raw_image_from(len: u32, whole: &mut impl io::Read) -> Option<RafRawImage> {
 
     let count = u32::from_be_bytes(block.get(0..4)?.try_into().ok()?);
     let mut p = 4usize;
+    let mut best: Option<RafRawImage> = None;
     for _ in 0..count.min(256) {
         let tag = u16::from_be_bytes(block.get(p..p + 2)?.try_into().ok()?);
         let size = u16::from_be_bytes(block.get(p + 2..p + 4)?.try_into().ok()?) as usize;
         let data = block.get(p + 4..p + 4 + size)?;
-        if tag == RAF_CROPPED_SIZE && size >= 4 {
-            // HEIGHT first: `10 40 18 60` is 4160 then 6240. Read the other
-            // way round it yields a portrait 26 MP frame -- plausible, wrong.
-            let height = u32::from(u16::from_be_bytes(data[0..2].try_into().ok()?));
-            let width = u32::from(u16::from_be_bytes(data[2..4].try_into().ok()?));
-            return (width > 0 && height > 0).then_some(RafRawImage { width, height });
+        if size >= 4 && matches!(tag, RAF_CROPPED_SIZE | RAF_OUTPUT_SIZE) {
+            // 0x0111 is HEIGHT first: `10 40 18 60` is 4160 then 6240. Read
+            // the other way round it yields a portrait 26 MP frame --
+            // plausible, wrong. 0x0112 is the other way about.
+            let a = u32::from(u16::from_be_bytes(data[0..2].try_into().ok()?));
+            let b = u32::from(u16::from_be_bytes(data[2..4].try_into().ok()?));
+            let (width, height) =
+                if tag == RAF_OUTPUT_SIZE { (a, b) } else { (b, a) };
+            if width > 0 && height > 0 {
+                let found = RafRawImage { width, height };
+                // 0x0112 wins where both exist, so keep walking after 0x0111
+                // rather than returning the first match.
+                if tag == RAF_OUTPUT_SIZE {
+                    return Some(found);
+                }
+                best = Some(found);
+            }
         }
         p += 4 + size;
     }
-    None
+    best
 }
 
 /// The Exif attributes out of a RAF's embedded JPEG, plus what the RAF states
@@ -245,6 +273,41 @@ mod tests {
         ]);
         let got = raw_image_from(block.len() as u32, &mut io::Cursor::new(&block));
         assert_eq!(got, Some(RafRawImage { width: 6240, height: 4160 }));
+    }
+
+    /// **0x0112 wins where both exist, and it is width-first.** On a Super-CCD
+    /// body 0x0111 is halved -- these are a real FinePix E550's bytes, which
+    /// state 4048x1520 there and 4048x3036 here for the same frame.
+    #[test]
+    fn the_output_size_outranks_the_cropped_size() {
+        let block = cfa(&[
+            (0x0111, &[0x05, 0xf0, 0x0f, 0xd0]),          // 1520 then 4048
+            (0x0112, &[0x0f, 0xd0, 0x0b, 0xdc]),          // 4048 then 3036
+        ]);
+        let got = raw_image_from(block.len() as u32, &mut io::Cursor::new(&block));
+        assert_eq!(got, Some(RafRawImage { width: 4048, height: 3036 }));
+    }
+
+    /// Order in the directory must not decide it -- 0x0112 is preferred
+    /// because of what it means, not because it happens to come later.
+    #[test]
+    fn the_output_size_wins_from_either_position() {
+        let block = cfa(&[
+            (0x0112, &[0x0f, 0xd0, 0x0b, 0xdc]),
+            (0x0111, &[0x05, 0xf0, 0x0f, 0xd0]),
+        ]);
+        let got = raw_image_from(block.len() as u32, &mut io::Cursor::new(&block));
+        assert_eq!(got, Some(RafRawImage { width: 4048, height: 3036 }));
+    }
+
+    /// The two oldest Super-CCD bodies carry no 0x0112, so 0x0111 still
+    /// answers -- halved, which is what the file says and what exiftool
+    /// reports too. Correcting it is the consumer's job, not the parser's.
+    #[test]
+    fn without_the_output_size_the_cropped_size_still_answers() {
+        let block = cfa(&[(0x0111, &[0x05, 0x90, 0x10, 0xa0])]);  // S2Pro
+        let got = raw_image_from(block.len() as u32, &mut io::Cursor::new(&block));
+        assert_eq!(got, Some(RafRawImage { width: 4256, height: 1424 }));
     }
 
     /// A file that does not carry the record gets no answer, rather than one
