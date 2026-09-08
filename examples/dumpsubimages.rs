@@ -26,7 +26,7 @@
 
 //! What images are embedded in a file, and where.
 //!
-//! The counterpart to `dumpexif` for [`exif::Exif::thumbnails`]. A raw carries
+//! The counterpart to `dumpexif` for [`exif::Exif::embedded_images`]. A raw carries
 //! a full-size JPEG preview, and its ADDRESS is metadata — so a viewer can put
 //! a raw on screen by copying those bytes, with no demosaic and no raw
 //! decoder. This prints what the library can find, and verifies each one is
@@ -59,7 +59,7 @@ fn main() {
                 continue;
             }
         };
-        let images = exif.thumbnails();
+        let images = exif.embedded_images();
         println!("{}  ({} embedded image(s))", short(path), images.len());
         for (i, img) in images.iter().enumerate() {
             // An offset is only useful if the bytes there are actually an

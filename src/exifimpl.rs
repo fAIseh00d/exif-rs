@@ -98,6 +98,9 @@ pub struct Exif {
     // actually is.
     #[cfg(feature = "make_note")]
     maker_note_offset: u32,
+    // Images the CONTAINER addresses that no tag does — a CR3 keeps its
+    // thumbnail and preview in boxes, so nothing in the Exif can find them.
+    container_images: Vec<(u64, u32)>,
     // MPF fields parsed from APP2 segment.
     // HashMap for quick access by tag number.
     #[cfg(feature = "mpf")]
@@ -134,9 +137,19 @@ impl Exif {
             maker_note_vendor,
             #[cfg(feature = "make_note")]
             maker_note_offset,
+            container_images: Vec::new(),
             #[cfg(feature = "mpf")]
             mpf_fields: HashMap::new(),
         }
+    }
+
+    /// Record images the container addresses directly, in FILE offsets.
+    ///
+    /// These do not go through [`Self::file_offset`]: a box tree states
+    /// absolute positions, not offsets from a TIFF header that a CR3 does not
+    /// even have at the file's start.
+    pub(crate) fn set_container_images(&mut self, images: Vec<(u64, u32)>) {
+        self.container_images = images;
     }
 
     /// Where an offset stated INSIDE the TIFF lands in the file.
@@ -188,6 +201,7 @@ impl Exif {
             maker_note_vendor,
             #[cfg(feature = "make_note")]
             maker_note_offset,
+            container_images: Vec::new(),
             mpf_fields,
         }
     }
@@ -336,7 +350,23 @@ impl Exif {
     /// }
     /// # Ok(()) }
     /// ```
-    pub fn thumbnails(&self) -> Vec<EmbeddedSubImage> {
+    /// Every image embedded in the file, with where it is and what it is.
+    ///
+    /// **Renamed from `thumbnails`, which had stopped being true.** The name
+    /// fitted when only IFD1 was read; it now returns a Sony ARW's 7.3 MB
+    /// full-resolution JPEG and, on a Nikon NEF, the undemosaiced sensor
+    /// mosaic. Calling those thumbnails would mislead exactly the caller who
+    /// most needs to tell them apart.
+    ///
+    /// Sources, none of which a single tag would find: `JPEGInterchangeFormat`
+    /// in any IFD, an IFD's own `StripOffsets`, a vendor MakerNote, MPF, and
+    /// the container's boxes (a CR3's `PRVW` and `THMB`).
+    ///
+    /// **This enumerates and chooses nothing.** Which image a caller wants —
+    /// biggest, big enough for a screen, or the full-resolution one — differs
+    /// per product, so [`EmbeddedSubImage`] reports the facts to choose by:
+    /// dimensions, `subfile_type`, `compression` and `photometric`.
+    pub fn embedded_images(&self) -> Vec<EmbeddedSubImage> {
         let mut images = Vec::new();
 
         // **Every IFD, not just IFD1.** `JPEGInterchangeFormat` (0x0201) and
@@ -437,6 +467,20 @@ impl Exif {
             });
         }
 
+        for &(offset, length) in &self.container_images {
+            images.push(EmbeddedSubImage {
+                source: EmbeddedSubImageSource::ContainerBox,
+                length,
+                offset,
+                subfile_type: None,
+                compression: None,
+                photometric: None,
+                ifd: None,
+                width: None,
+                height: None,
+            });
+        }
+
         // Try to get MakerNote preview images
         #[cfg(feature = "make_note")]
         {
@@ -514,6 +558,15 @@ impl Exif {
         }
 
         images
+    }
+
+    /// Every embedded image.
+    ///
+    /// Kept so existing callers still build; it never returned only
+    /// thumbnails once more than IFD1 was read.
+    #[deprecated(note = "renamed to `embedded_images`, which is what it returns")]
+    pub fn thumbnails(&self) -> Vec<EmbeddedSubImage> {
+        self.embedded_images()
     }
 
     /// Returns metadata for the primary image described in the MPF (APP2) segment.

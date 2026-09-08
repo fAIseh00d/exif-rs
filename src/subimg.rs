@@ -61,6 +61,10 @@ pub enum EmbeddedSubImageSource {
     #[cfg(feature = "make_note")]
     MakerNotePreview3 = 5,
 
+    /// An image the CONTAINER addresses rather than any tag — a CR3's `PRVW`
+    /// and `THMB` boxes. Its offset is already a file offset.
+    ContainerBox = 8,
+
     /// An image an IFD holds directly, addressed by its `StripOffsets` —
     /// which is how a DNG stores its preview.
     ///
@@ -96,6 +100,7 @@ impl EmbeddedSubImageSource {
             EmbeddedSubImageSource::MakerNotePreview3 => "MakerNotePreview3",
             EmbeddedSubImageSource::IfdImage => "IfdImage",
             EmbeddedSubImageSource::IfdStrip => "IfdStrip",
+            EmbeddedSubImageSource::ContainerBox => "ContainerBox",
         }
     }
 }

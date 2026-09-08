@@ -160,6 +160,12 @@ impl Reader {
     /// Parses the Exif attributes from raw Exif data.
     /// If an error occurred, `exif::Error` is returned.
     pub fn read_raw_vec(&self, buffers: Vec<Vec<u8>>) -> Result<Exif, Error> {
+        self.read_raw_vec_with(buffers, Vec::new())
+    }
+
+    /// `read_raw_vec`, plus images the CONTAINER addresses that no tag does.
+    fn read_raw_vec_with(&self, buffers: Vec<Vec<u8>>, previews: Vec<(u64, u32)>)
+                         -> Result<Exif, Error> {
         let mut data = Vec::new();
         let mut parser = tiff::Parser::new();
         parser.continue_on_error = self.continue_on_error.then(|| Vec::new());
@@ -176,7 +182,8 @@ impl Reader {
             parser.parse_with_context_offset(&data[offset..offset + buffer.len()], default_context, offset as u32)?;
             offset += buffer.len();
         }
-        let exif = Exif::new(data, parser.entries, parser.little_endian);
+        let mut exif = Exif::new(data, parser.entries, parser.little_endian);
+        exif.set_container_images(previews);
         match parser.continue_on_error {
             Some(v) if !v.is_empty() =>
                 Err(Error::PartialResult(PartialResult::new(exif, v))),
@@ -240,8 +247,13 @@ impl Reader {
             buf = isobmff::get_exif_attr(reader)?;
         } else if isobmff::crx::is_crx(&buf) {
             reader.seek(io::SeekFrom::Start(0))?;
+            // A CR3's embedded JPEGs are in boxes, addressed by nothing in the
+            // Exif -- so they are collected here, where the file is still in
+            // hand, and attached below.
+            let previews = isobmff::crx::preview_boxes(reader).unwrap_or_default();
+            reader.seek(io::SeekFrom::Start(0))?;
             let buf_vec = isobmff::crx::get_exif_attr_vec(reader)?;
-            return self.read_raw_vec(buf_vec);
+            return self.read_raw_vec_with(buf_vec, previews);
         } else if raf::is_raf(&buf) {
             reader.seek(io::SeekFrom::Start(0))?;
             let raf = raf::get_exif_and_raw_image(reader)?;

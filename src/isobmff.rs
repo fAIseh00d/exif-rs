@@ -429,6 +429,96 @@ pub mod crx {
     static CANON_FORMATS: &[[u8; 4]] = &[*b"crx "];
     static CANON_UUID:&[u8; 16] = &[0x85, 0xc0, 0xb6, 0x87, 0x82, 0x0f, 0x11, 0xe0, 0x81, 0x11, 0xf4, 0xce, 0x46, 0x2b, 0x6a, 0x48];
 
+    /// Where a CR3 keeps its embedded JPEGs, as `(file offset, length)`.
+    ///
+    /// Canon stores three images and none is addressed by a TIFF tag, so
+    /// nothing in the Exif can find them:
+    ///
+    /// * **`THMB`** — a 160x120 thumbnail, ~9.7 KB;
+    /// * **`PRVW`** — a 1620x1080 preview, ~332 KB;
+    /// * a full-size JPEG carried as a **track sample** in `mdat` (2.4 MB on
+    ///   an R6 Mark II), which needs the sample tables and is not read here.
+    ///
+    /// Both boxes carry a 16-byte header before the JPEG, and their layouts
+    /// differ — `PRVW` states width and height where `THMB` states a length —
+    /// so neither is parsed. **The size comes from the box**: `box - 8 - 16`,
+    /// which matches exiftool exactly on both (332512 - 24 = 332488;
+    /// 9712 - 24 = 9688). Dimensions come from the JPEG's own frame header,
+    /// which describes the image actually present.
+    ///
+    /// The walk descends only into CONTAINER boxes. Recursing generally would
+    /// mean walking `mdat`, which is the entire 30 MB raw.
+    pub fn preview_boxes<R>(reader: &mut R) -> Result<Vec<(u64, u32)>, Error>
+    where
+        R: BufRead + Seek,
+    {
+        /// Bytes between a `PRVW`/`THMB` box's start and its JPEG: the 8-byte
+        /// box header plus a 16-byte one of Canon's own.
+        const JPEG_AT: u64 = 24;
+        const MAX_DEPTH: u32 = 4;
+
+        fn walk<R: BufRead + Seek>(
+            reader: &mut R, start: u64, end: u64, depth: u32, out: &mut Vec<(u64, u32)>,
+        ) -> Result<(), Error> {
+            if depth > MAX_DEPTH {
+                return Ok(());
+            }
+            let mut at = start;
+            while at + 8 <= end {
+                reader.seek(SeekFrom::Start(at))?;
+                let mut head = [0u8; 8];
+                if reader.read_exact(&mut head).is_err() {
+                    return Ok(());
+                }
+                let size = u64::from(BigEndian::loadu32(&head, 0));
+                let boxtype: [u8; 4] = head[4..8].try_into().expect("never fails");
+                // A size of 0 means "to the end"; 1 means a 64-bit size
+                // follows. Neither is expected around these boxes, and
+                // guessing would risk a runaway walk.
+                if size < 8 || at + size > end {
+                    return Ok(());
+                }
+                match &boxtype {
+                    b"PRVW" | b"THMB" => {
+                        if size > JPEG_AT {
+                            if let Ok(len) = u32::try_from(size - JPEG_AT) {
+                                out.push((at + JPEG_AT, len));
+                            }
+                        }
+                    }
+                    b"uuid" => {
+                        // A `uuid` box carries a 16-byte identifier, and what
+                        // follows depends on WHICH uuid. Canon's preview
+                        // container puts 8 bytes of its own ahead of its
+                        // children; the metadata one does not. Getting this
+                        // wrong lands mid-box and finds nothing, which is how
+                        // PRVW stayed hidden while THMB was found.
+                        const CANON_PREVIEW_UUID: [u8; 16] = [
+                            0xea, 0xf4, 0x2b, 0x5e, 0x1c, 0x98, 0x4b, 0x88,
+                            0xb9, 0xfb, 0xb7, 0xdc, 0x40, 0x6e, 0x4d, 0x16,
+                        ];
+                        let mut id = [0u8; 16];
+                        reader.seek(SeekFrom::Start(at + 8))?;
+                        let extra = if reader.read_exact(&mut id).is_ok()
+                            && id == CANON_PREVIEW_UUID { 8 } else { 0 };
+                        walk(reader, at + 8 + 16 + extra, at + size, depth + 1, out)?;
+                    }
+                    b"moov" | b"udta" | b"trak" => {
+                        walk(reader, at + 8, at + size, depth + 1, out)?;
+                    }
+                    _ => {}
+                }
+                at += size;
+            }
+            Ok(())
+        }
+
+        let end = reader.seek(SeekFrom::End(0))?;
+        let mut out = Vec::new();
+        walk(reader, 0, end, 0, &mut out)?;
+        Ok(out)
+    }
+
     #[allow(unused)]
     pub fn get_exif_attr<R>(reader: &mut R) -> Result<Vec<u8>, Error>
     where

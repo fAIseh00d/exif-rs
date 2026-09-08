@@ -925,7 +925,7 @@ mod tests {
 
         let exif = crate::Reader::new().read_raw(f).unwrap();
         let mut found: Vec<(u64, u32)> =
-            exif.thumbnails().iter().map(|i| (i.offset, i.length)).collect();
+            exif.embedded_images().iter().map(|i| (i.offset, i.length)).collect();
         found.sort_unstable();
         assert_eq!(found, vec![(700, 30), (900, 60)],
                    "both IFDs address an image; only one was reported");
@@ -938,7 +938,7 @@ mod tests {
     fn a_strip_addressed_image_is_reported_with_its_own_size() {
         let f = strip_tiff(132940, 131328, false);
         let exif = crate::Reader::new().read_raw(f).unwrap();
-        let imgs = exif.thumbnails();
+        let imgs = exif.embedded_images();
         assert_eq!(imgs.len(), 1, "the strip image was not found");
         assert_eq!((imgs[0].offset, imgs[0].length), (132940, 131328));
         assert_eq!((imgs[0].width, imgs[0].height), (Some(256), Some(171)));
@@ -953,7 +953,7 @@ mod tests {
     fn a_sentinel_strip_offset_is_not_an_image() {
         let f = strip_tiff(u32::MAX, 43_180_032, false);
         let exif = crate::Reader::new().read_raw(f).unwrap();
-        assert!(exif.thumbnails().is_empty());
+        assert!(exif.embedded_images().is_empty());
     }
 
     /// A multi-strip image is not one contiguous run, so an offset and a
@@ -963,7 +963,7 @@ mod tests {
     fn a_multi_strip_image_is_not_reported() {
         let f = strip_tiff(132940, 131328, true);
         let exif = crate::Reader::new().read_raw(f).unwrap();
-        assert!(exif.thumbnails().is_empty());
+        assert!(exif.embedded_images().is_empty());
     }
 
     /// One IFD holding a 256x171 image in `strips` strips.
