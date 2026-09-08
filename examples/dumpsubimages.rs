@@ -72,14 +72,31 @@ fn main() {
                 && soi == [0xFF, 0xD8];
             let dims = img
                 .dimensions(&mut reader)
-                .map_or_else(|e| format!("? ({e})"), |(w, h)| format!("{w}x{h}"));
+                .map_or_else(|_| "?".to_owned(), |(w, h)| format!("{w}x{h}"));
+            // A CFA image is the undemosaiced sensor mosaic, addressed exactly
+            // like a preview and not a picture at all — saying so is the point.
+            let kind = match (img.photometric, img.compression) {
+                (Some(32803), _) => "CFA mosaic".to_owned(),
+                (_, Some(1)) => "uncompressed".to_owned(),
+                _ if ok => "JPEG".to_owned(),
+                (_, Some(c)) => format!("compression {c}"),
+                _ => "unknown".to_owned(),
+            };
+            // Bit 0 of NewSubfileType: a reduced-resolution version of another
+            // image, i.e. exactly what a viewer wants and not the raw itself.
+            let role = match img.subfile_type {
+                Some(t) if t & 1 == 1 => "preview",
+                Some(_) => "full-res",
+                None => "-",
+            };
             println!(
-                "  [{i}] {:<10} offset={:<10} {:>9} bytes  {:<12} {}",
+                "  [{i}] {:<10} offset={:<10} {:>9} bytes  {:<11} {:<9} {}",
                 img.source.name(),
                 img.offset,
                 img.length,
                 dims,
-                if ok { "JPEG" } else { "NOT a JPEG" },
+                role,
+                kind,
             );
             if let Some(dir) = &extract {
                 let name = format!("{}/{}_{i}.jpg", dir, stem(path));

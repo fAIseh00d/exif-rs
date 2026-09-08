@@ -931,6 +931,75 @@ mod tests {
                    "both IFDs address an image; only one was reported");
     }
 
+    /// A TIFF that IS an image addresses itself with `StripOffsets`, which is
+    /// how a DNG stores its preview — and unlike the `JPEGInterchangeFormat`
+    /// case, the IFD's own dimensions describe it, because the IFD is it.
+    #[test]
+    fn a_strip_addressed_image_is_reported_with_its_own_size() {
+        let f = strip_tiff(132940, 131328, false);
+        let exif = crate::Reader::new().read_raw(f).unwrap();
+        let imgs = exif.thumbnails();
+        assert_eq!(imgs.len(), 1, "the strip image was not found");
+        assert_eq!((imgs[0].offset, imgs[0].length), (132940, 131328));
+        assert_eq!((imgs[0].width, imgs[0].height), (Some(256), Some(171)));
+        assert_eq!(imgs[0].subfile_type, Some(1), "bit 0 marks it a preview");
+    }
+
+    /// **`0xFFFFFFFF` is a sentinel, not an address.** Panasonic writes it in
+    /// a RW2's `StripOffsets` and puts the real position in its own tag, so
+    /// reporting it hands the caller an offset four gigabytes into a much
+    /// smaller file.
+    #[test]
+    fn a_sentinel_strip_offset_is_not_an_image() {
+        let f = strip_tiff(u32::MAX, 43_180_032, false);
+        let exif = crate::Reader::new().read_raw(f).unwrap();
+        assert!(exif.thumbnails().is_empty());
+    }
+
+    /// A multi-strip image is not one contiguous run, so an offset and a
+    /// length cannot describe it; answering with the first strip would be a
+    /// plausible-looking lie.
+    #[test]
+    fn a_multi_strip_image_is_not_reported() {
+        let f = strip_tiff(132940, 131328, true);
+        let exif = crate::Reader::new().read_raw(f).unwrap();
+        assert!(exif.thumbnails().is_empty());
+    }
+
+    /// One IFD holding a 256x171 image in `strips` strips.
+    fn strip_tiff(offset: u32, count: u32, multi: bool) -> Vec<u8> {
+        let entries: u16 = 5;
+        let ifd_at = 8usize;
+        let array_at = ifd_at + 2 + entries as usize * 12 + 4;
+        let mut f = vec![0x49, 0x49];
+        f.extend_from_slice(&TIFF_FORTY_TWO.to_le_bytes());
+        f.extend_from_slice(&(ifd_at as u32).to_le_bytes());
+        f.extend_from_slice(&entries.to_le_bytes());
+        let mut put = |f: &mut Vec<u8>, tag: u16, typ: u16, cnt: u32, val: u32| {
+            f.extend_from_slice(&tag.to_le_bytes());
+            f.extend_from_slice(&typ.to_le_bytes());
+            f.extend_from_slice(&cnt.to_le_bytes());
+            f.extend_from_slice(&val.to_le_bytes());
+        };
+        put(&mut f, 0x00fe, 4, 1, 1);          // NewSubfileType: reduced
+        put(&mut f, 0x0100, 4, 1, 256);        // ImageWidth
+        put(&mut f, 0x0101, 4, 1, 171);        // ImageLength
+        if multi {
+            // Two strips, so the values live out of line.
+            put(&mut f, 0x0111, 4, 2, array_at as u32);
+            put(&mut f, 0x0117, 4, 2, (array_at + 8) as u32);
+        } else {
+            put(&mut f, 0x0111, 4, 1, offset);
+            put(&mut f, 0x0117, 4, 1, count);
+        }
+        f.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(f.len(), array_at);
+        for v in [offset, offset.wrapping_add(1), count, count] {
+            f.extend_from_slice(&v.to_le_bytes());
+        }
+        f
+    }
+
     /// The sub-image base sits above the chained IFDs (capped at 8) and above
     /// `In::MPF`, so nothing it writes can land on an existing allocation.
     #[test]

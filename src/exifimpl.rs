@@ -353,6 +353,52 @@ impl Exif {
         let chained = (0..8u16).map(In);
         let sub_images = (0..8u16).map(|i| In(In::SUB_IMAGE.0 + i));
         for ifd in chained.chain(sub_images) {
+            let u = |tag| self.get_field(tag, ifd).and_then(|f| f.value.get_uint(0));
+            let u16_of = |tag| u(tag).and_then(|v| u16::try_from(v).ok());
+
+            // An IFD that IS an image addresses itself with StripOffsets,
+            // which is how a DNG stores its preview -- 1280x964 JPEG on a
+            // Pixel, 256x171 uncompressed RGB on an Adobe conversion.
+            //
+            // Only a SINGLE strip is reported. A multi-strip image is not one
+            // contiguous run of bytes, so an offset and a length cannot
+            // describe it, and answering with the first strip would be a
+            // plausible-looking lie. Previews are written as one strip in
+            // practice (`RowsPerStrip` covers the full height).
+            //
+            // Dimensions here come from the IFD and are AUTHORITATIVE, unlike
+            // the JPEGInterchangeFormat case: this IFD is the image, rather
+            // than merely pointing at one.
+            if let (Some(strip), Some(count)) =
+                (self.get_field(Tag::StripOffsets, ifd),
+                 self.get_field(Tag::StripByteCounts, ifd))
+            {
+                let single = strip.value.get_uint(1).is_none()
+                    && count.value.get_uint(1).is_none();
+                if let (true, Some(offset), Some(length)) =
+                    (single, strip.value.get_uint(0), count.value.get_uint(0))
+                {
+                    // **`0xFFFFFFFF` is a sentinel, not an address.** Panasonic
+                    // writes it in a RW2's StripOffsets and states the real
+                    // position in its own `RawDataOffset` (0x0118) instead.
+                    // Reporting it would hand a caller an offset four
+                    // gigabytes into a file that is not that long.
+                    if length > 0 && offset != u32::MAX {
+                        images.push(EmbeddedSubImage {
+                            source: EmbeddedSubImageSource::IfdStrip,
+                            length,
+                            offset: self.file_offset(u64::from(offset)),
+                            subfile_type: u(Tag::NewSubfileType),
+                            compression: u16_of(Tag::Compression),
+                            photometric: u16_of(Tag::PhotometricInterpretation),
+                            ifd: Some(ifd),
+                            width: u(Tag::ImageWidth),
+                            height: u(Tag::ImageLength),
+                        });
+                    }
+                }
+            }
+
             let (Some(offset_field), Some(length_field)) = (
                 self.get_field(Tag::JPEGInterchangeFormat, ifd),
                 self.get_field(Tag::JPEGInterchangeFormatLength, ifd),
@@ -382,6 +428,9 @@ impl Exif {
                 },
                 length,
                 offset: self.file_offset(u64::from(tiff_offset)),
+                subfile_type: None,
+                compression: None,
+                photometric: None,
                 ifd: Some(ifd),
                 width: None,
                 height: None,
@@ -427,6 +476,9 @@ impl Exif {
                             length: len,
                             offset: self.file_offset(u64::from(
                                 self.maker_note_offset.saturating_add(start))),
+                            subfile_type: None,
+                            compression: None,
+                            photometric: None,
                             ifd: None,
                             width: None,
                             height: None,

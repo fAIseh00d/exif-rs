@@ -257,6 +257,11 @@ generate_well_known_tag_constants!(
     // 4.6.8 Table 17, and 4.6.8 Table 21].
     |Context::Tiff|
 
+    /// What kind of image this IFD holds [TIFF6 Section 8]: bit 0 set means a
+    /// reduced-resolution version of another image -- a preview or thumbnail.
+    (NewSubfileType, 0x0fe, DefaultValue::None, d_default,
+     unit![],
+     "New subfile type"),
     (ImageWidth, 0x100, DefaultValue::None, d_default,
      unit!["pixels"],
      "Image width"),

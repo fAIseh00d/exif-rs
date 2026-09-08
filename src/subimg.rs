@@ -61,6 +61,13 @@ pub enum EmbeddedSubImageSource {
     #[cfg(feature = "make_note")]
     MakerNotePreview3 = 5,
 
+    /// An image an IFD holds directly, addressed by its `StripOffsets` —
+    /// which is how a DNG stores its preview.
+    ///
+    /// **Not necessarily a JPEG.** A Canon DNG's is an uncompressed RGB
+    /// bitmap; a Pixel's is a JPEG. `compression` says which.
+    IfdStrip = 7,
+
     /// A JPEG addressed by `JPEGInterchangeFormat` in an IFD other than IFD1 —
     /// which is where a raw keeps its real preview.
     ///
@@ -88,6 +95,7 @@ impl EmbeddedSubImageSource {
             #[cfg(feature = "make_note")]
             EmbeddedSubImageSource::MakerNotePreview3 => "MakerNotePreview3",
             EmbeddedSubImageSource::IfdImage => "IfdImage",
+            EmbeddedSubImageSource::IfdStrip => "IfdStrip",
         }
     }
 }
@@ -112,6 +120,32 @@ pub struct EmbeddedSubImage {
     /// `In::THUMBNAIL` for a thumbnail, `In::SUB_IMAGE`+n for a sub-image.
     pub ifd: Option<crate::tiff::In>,
 
+    /// `Compression` (0x0103) as the file states it: 1 uncompressed, 6 or 7
+    /// JPEG. **An embedded image is not always a JPEG** -- a Canon DNG's
+    /// preview is a raw RGB bitmap -- so a caller that assumes one will
+    /// mis-handle it.
+    pub compression: Option<u16>,
+
+    /// `NewSubfileType` (0x00FE), the standard answer to *what is this
+    /// image*: bit 0 set means a reduced-resolution version of another image,
+    /// i.e. a preview or thumbnail; 0 means the full-resolution one.
+    ///
+    /// **More reliable than guessing from the other two.** An Olympus ORF
+    /// declares its sensor data `BlackIsZero` and `Uncompressed` -- which
+    /// describes a perfectly ordinary grayscale bitmap, so neither
+    /// `photometric` nor `compression` reveals that it is raw. Its size does,
+    /// and so does this.
+    pub subfile_type: Option<u32>,
+
+    /// `PhotometricInterpretation` (0x0106): 2 RGB, 6 YCbCr, **32803 CFA**.
+    ///
+    /// The CFA case is why this is reported. A raw's full-resolution
+    /// sub-image is addressed exactly like a preview and is *not a picture* --
+    /// it is the undemosaiced sensor mosaic. Showing it to someone expecting a
+    /// preview would produce a grey-green grid, so a viewer needs to be able
+    /// to tell them apart.
+    pub photometric: Option<u16>,
+
     /// The image's own dimensions, **where the file states them**.
     ///
     /// This is the field that lets a caller tell one embedded image from
@@ -131,6 +165,9 @@ impl EmbeddedSubImage {
             source: EmbeddedSubImageSource::Primary,
             length,
             offset,
+            subfile_type: None,
+            compression: None,
+            photometric: None,
             ifd: None,
             width: None,
             height: None,
@@ -143,6 +180,9 @@ impl EmbeddedSubImage {
             source: EmbeddedSubImageSource::Thumbnail,
             length,
             offset,
+            subfile_type: None,
+            compression: None,
+            photometric: None,
             ifd: None,
             width: None,
             height: None,
@@ -156,6 +196,9 @@ impl EmbeddedSubImage {
             source: EmbeddedSubImageSource::Mpf,
             length,
             offset,
+            subfile_type: None,
+            compression: None,
+            photometric: None,
             ifd: None,
             width: None,
             height: None,
@@ -173,6 +216,9 @@ impl EmbeddedSubImage {
             source,
             length,
             offset,
+            subfile_type: None,
+            compression: None,
+            photometric: None,
             ifd: None,
             width: None,
             height: None,
