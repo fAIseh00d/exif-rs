@@ -33,6 +33,7 @@ use crate::tag::Tag;
 use crate::tiff::{Field, IfdEntry, In};
 use crate::value::Value;
 use crate::isobmff;
+use crate::mrw;
 use crate::jpeg;
 use crate::png;
 use crate::raf;
@@ -272,6 +273,13 @@ impl Reader {
             // by the RAF header and by no tag at all -- without this a Fuji
             // raw offers only its 8.8 KB IFD1 thumbnail.
             container_images.push((raf.jpeg_offset, raf.jpeg_length));
+        } else if mrw::is_mrw(&buf) {
+            reader.seek(io::SeekFrom::Start(0))?;
+            let parsed = mrw::get_exif_attr(reader)?;
+            buf = parsed.exif;
+            // The TIFF sits inside a block partway into the file, so every
+            // offset in it counts from where that block begins.
+            tiff_base = parsed.tiff_offset;
         } else if webp::is_webp(&buf) {
             buf = webp::get_exif_attr(&mut buf.chain(reader))?;
         } else {

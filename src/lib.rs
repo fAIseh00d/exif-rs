@@ -130,6 +130,7 @@ pub mod make_note;
 #[cfg(feature = "mpf")]
 mod mpf;
 mod png;
+mod mrw;
 mod raf;
 mod reader;
 mod tag;
