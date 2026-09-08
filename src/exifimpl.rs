@@ -467,6 +467,38 @@ impl Exif {
             });
         }
 
+        // Panasonic does not ADDRESS its preview at all -- it stores the JPEG
+        // as the VALUE of an IFD0 tag, so there is no offset tag to follow and
+        // `StripOffsets` holds a 0xFFFFFFFF sentinel. Every RW2 body checked
+        // carries one, 335 KB to 926 KB, 1920x1280 on a DC-S5.
+        //
+        // The value's own position in the TIFF is the image's position, since
+        // a value this size is stored out of line.
+        const PANASONIC_JPG_FROM_RAW: u16 = 0x002e;
+        if let Some(f) = self.fields().find(|f| {
+            f.tag.number() == PANASONIC_JPG_FROM_RAW && f.ifd_num == In::PRIMARY
+        }) {
+            if let crate::value::Value::Undefined(ref data, offset) = f.value {
+                // Verify rather than assume: 0x002E means nothing in baseline
+                // TIFF, so another dialect is free to use it for anything.
+                if data.starts_with(&[0xFF, 0xD8]) {
+                    if let Ok(length) = u32::try_from(data.len()) {
+                        images.push(EmbeddedSubImage {
+                            source: EmbeddedSubImageSource::IfdStrip,
+                            length,
+                            offset: self.file_offset(u64::from(offset)),
+                            subfile_type: None,
+                            compression: None,
+                            photometric: None,
+                            ifd: Some(In::PRIMARY),
+                            width: None,
+                            height: None,
+                        });
+                    }
+                }
+            }
+        }
+
         for &(offset, length) in &self.container_images {
             images.push(EmbeddedSubImage {
                 source: EmbeddedSubImageSource::ContainerBox,

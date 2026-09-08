@@ -1000,6 +1000,54 @@ mod tests {
         f
     }
 
+    /// **Panasonic does not ADDRESS its preview — it stores the JPEG as a tag
+    /// VALUE.** There is no offset tag to follow, and `StripOffsets` holds a
+    /// `0xFFFFFFFF` sentinel, so a reader looking only for pointers finds
+    /// nothing at all in an RW2.
+    #[test]
+    fn an_inline_jpeg_value_is_an_embedded_image() {
+        // IFD0 with tag 0x002E holding a JPEG out of line.
+        let jpeg = [0xFFu8, 0xD8, 0xFF, 0xD9, 0, 0, 0, 0];
+        let ifd_at = 8usize;
+        let value_at = ifd_at + 2 + 12 + 4;
+        let mut f = vec![0x49, 0x49];
+        f.extend_from_slice(&RW2_EIGHTY_FIVE.to_le_bytes());
+        f.extend_from_slice(&(ifd_at as u32).to_le_bytes());
+        f.extend_from_slice(&1u16.to_le_bytes());
+        f.extend_from_slice(&0x002eu16.to_le_bytes());
+        f.extend_from_slice(&7u16.to_le_bytes());              // UNDEFINED
+        f.extend_from_slice(&(jpeg.len() as u32).to_le_bytes());
+        f.extend_from_slice(&(value_at as u32).to_le_bytes());
+        f.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(f.len(), value_at);
+        f.extend_from_slice(&jpeg);
+
+        let exif = crate::Reader::new().read_raw(f).unwrap();
+        let imgs = exif.embedded_images();
+        assert_eq!(imgs.len(), 1, "the inline JPEG was not reported");
+        assert_eq!((imgs[0].offset, imgs[0].length), (value_at as u64, 8));
+    }
+
+    /// The tag means nothing in baseline TIFF, so another dialect may use it
+    /// for something that is not an image. The value is checked, not assumed.
+    #[test]
+    fn an_inline_value_that_is_not_a_jpeg_is_ignored() {
+        let ifd_at = 8usize;
+        let value_at = ifd_at + 2 + 12 + 4;
+        let mut f = vec![0x49, 0x49];
+        f.extend_from_slice(&RW2_EIGHTY_FIVE.to_le_bytes());
+        f.extend_from_slice(&(ifd_at as u32).to_le_bytes());
+        f.extend_from_slice(&1u16.to_le_bytes());
+        f.extend_from_slice(&0x002eu16.to_le_bytes());
+        f.extend_from_slice(&7u16.to_le_bytes());
+        f.extend_from_slice(&8u32.to_le_bytes());
+        f.extend_from_slice(&(value_at as u32).to_le_bytes());
+        f.extend_from_slice(&0u32.to_le_bytes());
+        f.extend_from_slice(&[0u8; 8]);
+        let exif = crate::Reader::new().read_raw(f).unwrap();
+        assert!(exif.embedded_images().is_empty());
+    }
+
     /// The sub-image base sits above the chained IFDs (capped at 8) and above
     /// `In::MPF`, so nothing it writes can land on an existing allocation.
     #[test]
