@@ -52,6 +52,13 @@ const MRW_MAGIC: &[u8] = b"\x00MRM";
 /// The block holding the TIFF.
 const TTW: &[u8; 4] = b"\x00TTW";
 
+/// The block holding the sensor and output geometry.
+const PRD: &[u8; 4] = b"\x00PRD";
+
+/// Where `PRD` states its four sizes, as big-endian `u16`s:
+/// `[sensor height, sensor width, image height, image width]`.
+const PRD_SIZES_AT: usize = 8;
+
 /// A header longer than this is not a header. The largest in the corpus is
 /// 106 KB (a Dynax 5D), and the block carries a full TIFF with a thumbnail.
 const MAX_HEADER: u32 = 8 * 1024 * 1024;
@@ -63,12 +70,27 @@ pub fn is_mrw(buf: &[u8]) -> bool {
     buf.starts_with(MRW_MAGIC)
 }
 
+/// The size the body actually outputs, from the `PRD` block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MrwRawImage {
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Where the TIFF is, and its bytes.
 pub(crate) struct MrwContents {
     pub exif: Vec<u8>,
     /// Offset of the TIFF within the file — every offset inside it counts
     /// from here.
     pub tiff_offset: u64,
+    /// What `PRD` says the picture is, when the block is present.
+    ///
+    /// **The TIFF inside `TTW` is not reliable for this.** A DiMAGE 5's IFD0
+    /// states 1600x1200 while the body outputs 2048x1544 -- that IFD is
+    /// describing a preview. `PRD` states the real geometry on every body in
+    /// the corpus and agrees with the TIFF wherever the TIFF is right, which
+    /// is what makes it the source rather than a second opinion.
+    pub raw_image: Option<MrwRawImage>,
 }
 
 /// Reads the block list and returns the `TTW` block's TIFF.
@@ -94,6 +116,8 @@ where
     // and the list runs to the end of the header.
     let end = u64::from(header_len) + PREAMBLE as u64;
     let mut at = PREAMBLE as u64;
+    let mut raw_image = None;
+    let mut ttw: Option<(Vec<u8>, u64)> = None;
     while at + 8 <= end {
         reader
             .seek(io::SeekFrom::Start(at))
@@ -104,15 +128,39 @@ where
         }
         let len = u32::from_be_bytes([blk[4], blk[5], blk[6], blk[7]]);
         let body = at + 8;
-        if &blk[..4] == TTW {
-            if len == 0 || u64::from(len) > u64::from(MAX_HEADER) {
-                return Err(Error::InvalidFormat("Implausible MRW TTW length"));
+        match &blk[..4] {
+            b if b == TTW => {
+                if len == 0 || u64::from(len) > u64::from(MAX_HEADER) {
+                    return Err(Error::InvalidFormat("Implausible MRW TTW length"));
+                }
+                let mut exif = vec![0u8; len as usize];
+                reader
+                    .read_exact(&mut exif)
+                    .map_err(|_| Error::InvalidFormat("Truncated MRW TTW block"))?;
+                ttw = Some((exif, body));
             }
-            let mut exif = vec![0u8; len as usize];
-            reader
-                .read_exact(&mut exif)
-                .map_err(|_| Error::InvalidFormat("Truncated MRW TTW block"))?;
-            return Ok(MrwContents { exif, tiff_offset: body });
+            b if b == PRD => {
+                // Four big-endian u16s; only the output pair is wanted.
+                let want = PRD_SIZES_AT + 8;
+                if len as usize >= want {
+                    let mut prd = vec![0u8; want];
+                    if reader.read_exact(&mut prd).is_ok() {
+                        let at16 = |p: usize| u32::from(u16::from_be_bytes([prd[p], prd[p + 1]]));
+                        let (h, w) = (at16(PRD_SIZES_AT + 4), at16(PRD_SIZES_AT + 6));
+                        if w > 0 && h > 0 {
+                            raw_image = Some(MrwRawImage { width: w, height: h });
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        // Both blocks found; the rest of the list is not needed. `PRD` comes
+        // first on every body in the corpus, but the order is the vendor's
+        // and not something to rely on -- so the walk continues until TTW is
+        // in hand rather than stopping at whichever came first.
+        if let Some((exif, tiff_offset)) = ttw.take() {
+            return Ok(MrwContents { exif, tiff_offset, raw_image });
         }
         // Not this one; step over it. A length that overflows the walk is a
         // malformed list rather than a block to trust.

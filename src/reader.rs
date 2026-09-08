@@ -219,6 +219,7 @@ impl Reader {
         // the JPEG. What the RAW image measures is stated only in the RAF's
         // own CFA header, so it is carried out separately and attached below.
         let mut raf_raw_image: Option<raf::RafRawImage> = None;
+        let mut mrw_raw_image: Option<mrw::MrwRawImage> = None;
         // Images the container addresses directly, in FILE offsets.
         let mut container_images: Vec<(u64, u32)> = Vec::new();
         // Where the TIFF header these fields describe sits in the file. It is
@@ -277,6 +278,7 @@ impl Reader {
             reader.seek(io::SeekFrom::Start(0))?;
             let parsed = mrw::get_exif_attr(reader)?;
             buf = parsed.exif;
+            mrw_raw_image = parsed.raw_image;
             // The TIFF sits inside a block partway into the file, so every
             // offset in it counts from where that block begins.
             tiff_base = parsed.tiff_offset;
@@ -289,12 +291,12 @@ impl Reader {
         #[cfg(feature = "mpf")]
         {
             self.read_raw_with_mpf(buf, mpf_data, mpf_app2_offset,
-                                   raf_sub_image(raf_raw_image), tiff_base,
+                                   { let mut extra = raf_sub_image(raf_raw_image); extra.extend(mrw_sub_image(mrw_raw_image)); extra }, tiff_base,
                                    container_images)
         }
         #[cfg(not(feature = "mpf"))]
         {
-            self.read_raw_with_extra(buf, raf_sub_image(raf_raw_image), tiff_base,
+            self.read_raw_with_extra(buf, { let mut extra = raf_sub_image(raf_raw_image); extra.extend(mrw_sub_image(mrw_raw_image)); extra }, tiff_base,
                                      container_images)
         }
     }
@@ -391,6 +393,16 @@ mod tests {
 }
 
 /// The RAF's raw image, as ordinary sub-image fields.
+/// `PRD`'s geometry, in the same shape -- see [`raf_sub_image`].
+fn mrw_sub_image(raw: Option<mrw::MrwRawImage>) -> Vec<Field> {
+    raw.map_or_else(Vec::new, |r| vec![
+        Field { tag: Tag::ImageWidth, ifd_num: In::SUB_IMAGE,
+                value: Value::Long(vec![r.width]) },
+        Field { tag: Tag::ImageLength, ifd_num: In::SUB_IMAGE,
+                value: Value::Long(vec![r.height]) },
+    ])
+}
+
 fn raf_sub_image(raw: Option<raf::RafRawImage>) -> Vec<Field> {
     raw.map_or_else(Vec::new, |r| vec![
         Field { tag: Tag::ImageWidth, ifd_num: In::SUB_IMAGE,
