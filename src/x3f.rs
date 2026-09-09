@@ -364,10 +364,13 @@ pub(crate) fn synthesize(props: &[(String, String)], frame: Option<(u32, u32)>)
 
 /// A Unix timestamp as `"YYYY:MM:DD HH:MM:SS"` in UTC.
 ///
+/// Shared with [`crate::crw`]: a CIFF `CaptureTime` is the same thing in the
+/// same encoding, and two copies of a calendar are two chances to differ.
+///
 /// Days-to-calendar by Howard Hinnant's civil_from_days, which is exact and
 /// needs no table; the crate has no date dependency and this is not a reason
 /// to add one.
-fn utc_string(secs: i64) -> Option<String> {
+pub(crate) fn utc_string(secs: i64) -> Option<String> {
     if !(0..=253_402_300_799).contains(&secs) {
         return None;
     }

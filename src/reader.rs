@@ -34,6 +34,7 @@ use crate::tiff::{Field, IfdEntry, In};
 use crate::value::Value;
 use crate::isobmff;
 use crate::mrw;
+use crate::crw;
 use crate::x3f;
 use crate::jpeg;
 use crate::png;
@@ -284,6 +285,18 @@ impl Reader {
             // The TIFF sits inside a block partway into the file, so every
             // offset in it counts from where that block begins.
             tiff_base = parsed.tiff_offset;
+        } else if crw::is_crw(&buf) {
+            reader.seek(io::SeekFrom::Start(0))?;
+            let c = crw::get_contents(reader)?;
+            for img in [c.preview, c.thumbnail].into_iter().flatten() {
+                container_images.push(img);
+            }
+            // **A CIFF holds no TIFF and its preview holds no Exif** -- the
+            // embedded JPEG starts `FF D8 FF DB`, a quantisation table, with
+            // no APP1 anywhere. So the parser is given the smallest valid
+            // TIFF and every field arrives synthesised, as an X3F's do.
+            x3f_fields = c.fields;
+            buf = x3f::EMPTY_TIFF.to_vec();
         } else if x3f::is_x3f(&buf) {
             reader.seek(io::SeekFrom::Start(0))?;
             let x = x3f::get_contents(reader)?;

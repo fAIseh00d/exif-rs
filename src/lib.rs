@@ -131,6 +131,7 @@ pub mod make_note;
 mod mpf;
 mod png;
 mod mrw;
+mod crw;
 mod x3f;
 mod raf;
 mod reader;
