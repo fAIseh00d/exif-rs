@@ -290,10 +290,29 @@ impl Reader {
             if let Some(p) = x.preview {
                 container_images.push(p);
             }
-            x3f_fields = x3f::synthesize(&x.props);
-            // An X3F holds no TIFF at all, so the parser is given the
-            // smallest valid one and every field arrives synthesised.
-            buf = x3f::EMPTY_TIFF.to_vec();
+            x3f_fields = x3f::synthesize(&x.props, x.frame);
+            // **The Quattro generation dropped `PROP`.** Its preview carries
+            // an ordinary Exif block instead, so it is read the way a RAF's
+            // is -- the offsets inside it count from the JPEG's own header.
+            // Older bodies have no such block and rely on the synthesised
+            // fields alone, which is why both paths exist.
+            match x.exif_jpeg {
+                Some((at, _)) => {
+                    reader.seek(io::SeekFrom::Start(at))?;
+                    match jpeg::get_exif_attr(reader) {
+                        Ok(tiff) => {
+                            buf = tiff;
+                            tiff_base = at + crate::exifimpl::JPEG_TIFF_BASE;
+                        }
+                        // A JPEG that claims an APP1 and has no usable Exif
+                        // is not a reason to lose the rest of the file.
+                        Err(_) => buf = x3f::EMPTY_TIFF.to_vec(),
+                    }
+                }
+                // An X3F holds no TIFF at all, so the parser is given the
+                // smallest valid one and every field arrives synthesised.
+                None => buf = x3f::EMPTY_TIFF.to_vec(),
+            }
         } else if webp::is_webp(&buf) {
             buf = webp::get_exif_attr(&mut buf.chain(reader))?;
         } else {

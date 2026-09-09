@@ -63,6 +63,12 @@ const FORMAT_JPEG: u32 = 18;
 const MAX_ENTRIES: u32 = 64;
 /// `PROP` is a small block of text; a claim beyond this is not one.
 const MAX_PROP: u32 = 1 << 20;
+/// Enough of the file header to reach the stated size.
+const HEADER_SIZE: usize = 36;
+/// The version at which the header stopped stating the picture's size.
+const QUATTRO_VERSION: u32 = 4 << 16;
+/// A sensor edge beyond this is not one.
+const MAX_EDGE: u32 = 1 << 17;
 
 pub fn is_x3f(buf: &[u8]) -> bool {
     buf.starts_with(X3F_MAGIC)
@@ -75,6 +81,27 @@ pub(crate) struct X3fContents {
     pub props: Vec<(String, String)>,
     /// Offset and length of an embedded JPEG, when one is present.
     pub preview: Option<(u64, u32)>,
+    /// The embedded JPEG that carries an `Exif` APP1, when one does.
+    ///
+    /// **The Quattro generation dropped `PROP` entirely** — an sd Quattro or
+    /// dp2 Quattro has only `CAMF` and `SPPA`, and `CAMF` is obfuscated. What
+    /// it gained is an ordinary Exif block inside the preview, naming the
+    /// body and the moment, so the metadata is read the way a RAF's is: from
+    /// the JPEG the container happens to hold.
+    pub exif_jpeg: Option<(u64, u32)>,
+    /// The picture's size, as the FILE HEADER states it.
+    ///
+    /// **Not the readout, and the difference is every body.** An image
+    /// section states its own columns and rows, but those are the sensor's:
+    /// a DP1 Merrill reads 4928x3264 and renders 4704x3136, an SD10 reads
+    /// 2304x1531 and renders 2268x1512. The header at offset 28 states the
+    /// second number, and it is the one exiftool and libraw both report.
+    ///
+    /// **Version 4 -- the Quattro generation -- does not state it there.**
+    /// The field holds something else entirely (1694217600 on an sd
+    /// Quattro), so it is read only below that version; a Quattro's preview
+    /// carries an ordinary `PixelXDimension` instead, and that agrees.
+    pub frame: Option<(u32, u32)>,
 }
 
 fn le32(b: &[u8], at: usize) -> Option<u32> {
@@ -86,12 +113,22 @@ pub(crate) fn get_contents<R>(reader: &mut R) -> Result<X3fContents, Error>
 where
     R: io::BufRead + io::Seek,
 {
-    let mut magic = [0u8; 4];
+    // `FOVb`, a version, a 16-byte identifier, a mark word, then the size.
+    let mut header = [0u8; HEADER_SIZE];
     reader
-        .read_exact(&mut magic)
+        .read_exact(&mut header)
         .map_err(|_| Error::InvalidFormat("Truncated X3F"))?;
-    if !is_x3f(&magic) {
+    if !is_x3f(&header) {
         return Err(Error::InvalidFormat("Not an X3F file"));
+    }
+    let mut out = X3fContents::default();
+    let version = le32(&header, 4).unwrap_or(0);
+    if version < QUATTRO_VERSION {
+        if let (Some(c), Some(r)) = (le32(&header, 28), le32(&header, 32)) {
+            if c > 0 && r > 0 && c <= MAX_EDGE && r <= MAX_EDGE {
+                out.frame = Some((c, r));
+            }
+        }
     }
     let end = reader
         .seek(SeekFrom::End(0))
@@ -125,7 +162,6 @@ where
         .read_exact(&mut table)
         .map_err(|_| Error::InvalidFormat("Truncated X3F directory"))?;
 
-    let mut out = X3fContents::default();
     for i in 0..count as usize {
         let base = i * 12;
         let (Some(off), Some(len)) = (le32(&table, base), le32(&table, base + 4)) else {
@@ -210,7 +246,10 @@ fn read_image<R: io::BufRead + io::Seek>(reader: &mut R, off: u32, len: u32, out
     {
         return;
     }
-    if &head[..4] != SECI || le32(&head, 12) != Some(FORMAT_JPEG) {
+    if &head[..4] != SECI {
+        return;
+    }
+    if le32(&head, 12) != Some(FORMAT_JPEG) {
         return;
     }
     let at = u64::from(off) + u64::from(IMAGE_HEADER);
@@ -218,14 +257,22 @@ fn read_image<R: io::BufRead + io::Seek>(reader: &mut R, off: u32, len: u32, out
     // Confirm rather than trust: the format word is the file's word about
     // its own bytes, and reporting an address without looking is how a
     // caller extracts something that is not an image.
-    let mut soi = [0u8; 2];
+    let mut lead = [0u8; 4];
     if reader.seek(SeekFrom::Start(at)).is_ok()
-        && reader.read_exact(&mut soi).is_ok()
-        && soi == [0xFF, 0xD8]
+        && reader.read_exact(&mut lead).is_ok()
+        && lead[..2] == [0xFF, 0xD8]
     {
         // The largest JPEG wins: bodies carry a small one too.
         if out.preview.is_none_or(|(_, prev)| size > prev) {
             out.preview = Some((at, size));
+        }
+        // `FF E1` straight after the SOI is an APP1, which on these files is
+        // the Exif block. Checked rather than assumed, and the largest such
+        // JPEG wins for the same reason.
+        if lead[2..4] == [0xFF, 0xE1]
+            && out.exif_jpeg.is_none_or(|(_, prev)| size > prev)
+        {
+            out.exif_jpeg = Some((at, size));
         }
     }
 }
@@ -246,7 +293,8 @@ pub(crate) const EMPTY_TIFF: [u8; 14] = [
 /// states a local wall clock with nothing saying which zone it is. It is
 /// rendered as the UTC wall clock so the repo's naive-UTC rule reproduces the
 /// same instant, and that is what exiftool reports for these files too.
-pub(crate) fn synthesize(props: &[(String, String)]) -> Vec<crate::tiff::Field> {
+pub(crate) fn synthesize(props: &[(String, String)], frame: Option<(u32, u32)>)
+                         -> Vec<crate::tiff::Field> {
     use crate::tag::Tag;
     use crate::tiff::{Field, In};
     use crate::value::{Rational, Value};
@@ -293,6 +341,16 @@ pub(crate) fn synthesize(props: &[(String, String)]) -> Vec<crate::tiff::Field> 
     }
     if let Some(v) = get("APERTURE").and_then(|v| v.parse::<f64>().ok()) {
         rational(Tag::FNumber, v);
+    }
+    if let Some((w, h)) = frame {
+        // **A SUB-IMAGE, not the primary IFD.** Where a preview's Exif is
+        // read too, its IFD0 describes a thumbnail, and a consumer reading
+        // the ordinary tags would take that for the photograph. A sub-image
+        // outranks it in the same precedence a RAF's CFA header and an MRW's
+        // PRD block already rely on, and for the same reason.
+        for (tag, v) in [(Tag::ImageWidth, w), (Tag::ImageLength, h)] {
+            out.push(Field { tag, ifd_num: In::SUB_IMAGE, value: Value::Long(vec![v]) });
+        }
     }
     if let Some(v) = get("ISO").and_then(|v| v.parse::<u32>().ok()) {
         out.push(Field {
@@ -351,10 +409,10 @@ mod tests {
     /// become an empty tag that reads as "the camera said nothing here".
     #[test]
     fn absent_properties_produce_no_fields() {
-        assert!(synthesize(&[]).is_empty());
+        assert!(synthesize(&[], None).is_empty());
         let only_junk = vec![("NOTATAG".to_owned(), "x".to_owned()),
                              ("CAMMODEL".to_owned(), String::new())];
-        assert!(synthesize(&only_junk).is_empty());
+        assert!(synthesize(&only_junk, None).is_empty());
     }
 
     #[test]
@@ -364,7 +422,7 @@ mod tests {
             ("CAMSERIAL", "01005322"), ("TIME", "1345295521"),
             ("SHUTTER", "0.001791"), ("APERTURE", "6.44196"), ("ISO", "100"),
         ].iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
-        let got = synthesize(&props);
+        let got = synthesize(&props, None);
         let has = |t: crate::tag::Tag| got.iter().any(|f| f.tag == t);
         assert!(has(crate::tag::Tag::Make));
         assert!(has(crate::tag::Tag::Model));
