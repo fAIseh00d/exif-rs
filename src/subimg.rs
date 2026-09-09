@@ -262,6 +262,42 @@ impl EmbeddedSubImage {
         if let (Some(w), Some(h)) = (self.width, self.height) {
             return Ok((w, h));
         }
+        self.frame(reader).map(|(w, h, _)| (w, h))
+    }
+
+    /// Is this an image an ordinary decoder can DRAW?
+    ///
+    /// **A raw plane can be a JPEG.** A Canon CR2 stores its undemosaiced
+    /// sensor data as LOSSLESS JPEG: it opens with `FF D8`, it parses, it
+    /// reports 5568x3708 -- and it is the largest image in the file, so
+    /// anything choosing "the biggest embedded JPEG" takes the sensor mosaic
+    /// over the 5472x3648 preview beside it and hands 20 MB of `SOF3` to a
+    /// baseline decoder.
+    ///
+    /// Neither tag settles it on that plane: `PhotometricInterpretation` is
+    /// not the CFA value and it declares no `NewSubfileType`. The FRAME
+    /// MARKER does, and this walk already reaches it -- so the answer belongs
+    /// here rather than in each caller, which would otherwise re-walk the
+    /// same markers and could disagree.
+    ///
+    /// `SOF0`, `SOF1` and `SOF2` are baseline, extended-sequential and
+    /// progressive: everything a viewer can draw. `SOF3` and the arithmetic
+    /// and hierarchical variants above it cannot be displayed.
+    pub fn is_displayable<R>(&self, reader: &mut R) -> bool
+    where
+        R: BufRead + Seek,
+    {
+        // A non-JPEG embedded image (an uncompressed RGB thumbnail, say) has
+        // no frame header and is not what this question is about; only a
+        // JPEG that parses and states a marker answers it.
+        matches!(self.frame(reader), Ok((_, _, m)) if matches!(m, 0xC0 | 0xC1 | 0xC2))
+    }
+
+    /// Width, height and the SOF marker id, from the frame header.
+    fn frame<R>(&self, reader: &mut R) -> Result<(u32, u32, u8), Error>
+    where
+        R: BufRead + Seek,
+    {
         use std::io::SeekFrom;
         reader.seek(SeekFrom::Start(self.offset))?;
         let mut head = [0u8; 4];
@@ -324,7 +360,7 @@ impl EmbeddedSubImage {
                 let h = u32::from(u16::from_be_bytes([sof[1], sof[2]]));
                 let w = u32::from(u16::from_be_bytes([sof[3], sof[4]]));
                 return (w > 0 && h > 0)
-                    .then_some((w, h))
+                    .then_some((w, h, id))
                     .ok_or(Error::InvalidFormat("Zero-sized JPEG frame"));
             }
             reader.seek(SeekFrom::Current(seg_len as i64 - 2))?;
@@ -588,6 +624,29 @@ mod tests {
         // **Longer than four bytes still matches.** A bare slice pattern
         // would not, and that is exactly how the repair came to do nothing.
         assert!(is_jpeg_start(&[0x02, 0xD8, 0xFF, 0xDB, 0x00, 0x84]));
+    }
+
+    /// **A lossless-JPEG raw plane is not displayable**, which is the whole
+    /// reason this exists: a CR2's sensor data is `SOF3` and would otherwise
+    /// be chosen over the preview beside it for being larger.
+    #[test]
+    fn a_lossless_frame_is_not_displayable() {
+        // Same minimal JPEG, with the frame marker swapped for SOF3.
+        let mut b = jpeg(5568, 3708);
+        let sof = b.iter().position(|&x| x == 0xC0).expect("SOF0 in the fixture");
+        b[sof] = 0xC3;
+        let (file, img) = at(b, 64);
+        let mut r = std::io::Cursor::new(file);
+        assert!(!img.is_displayable(&mut r));
+    }
+
+    /// And a baseline one is — the preview a viewer actually wants.
+    #[test]
+    fn a_baseline_frame_is_displayable() {
+        let (file, img) = at(jpeg(5472, 3648), 64);
+        let mut r = std::io::Cursor::new(file);
+        assert!(img.is_displayable(&mut r));
+        assert_eq!(img.dimensions(&mut r).unwrap(), (5472, 3648));
     }
 
     /// Stated dimensions win and cost no read at all.
