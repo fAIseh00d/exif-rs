@@ -42,7 +42,7 @@
 //! `tiff_base` to where the block begins — the same arrangement a RAF needs
 //! for the Exif in its embedded JPEG.
 
-use std::io::{self, Read, Seek};
+use std::io;
 
 use crate::error::Error;
 

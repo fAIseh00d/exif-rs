@@ -34,6 +34,7 @@ use crate::tiff::{Field, IfdEntry, In};
 use crate::value::Value;
 use crate::isobmff;
 use crate::mrw;
+use crate::x3f;
 use crate::jpeg;
 use crate::png;
 use crate::raf;
@@ -220,6 +221,7 @@ impl Reader {
         // own CFA header, so it is carried out separately and attached below.
         let mut raf_raw_image: Option<raf::RafRawImage> = None;
         let mut mrw_raw_image: Option<mrw::MrwRawImage> = None;
+        let mut x3f_fields: Vec<Field> = Vec::new();
         // Images the container addresses directly, in FILE offsets.
         let mut container_images: Vec<(u64, u32)> = Vec::new();
         // Where the TIFF header these fields describe sits in the file. It is
@@ -282,6 +284,16 @@ impl Reader {
             // The TIFF sits inside a block partway into the file, so every
             // offset in it counts from where that block begins.
             tiff_base = parsed.tiff_offset;
+        } else if x3f::is_x3f(&buf) {
+            reader.seek(io::SeekFrom::Start(0))?;
+            let x = x3f::get_contents(reader)?;
+            if let Some(p) = x.preview {
+                container_images.push(p);
+            }
+            x3f_fields = x3f::synthesize(&x.props);
+            // An X3F holds no TIFF at all, so the parser is given the
+            // smallest valid one and every field arrives synthesised.
+            buf = x3f::EMPTY_TIFF.to_vec();
         } else if webp::is_webp(&buf) {
             buf = webp::get_exif_attr(&mut buf.chain(reader))?;
         } else {
@@ -291,12 +303,12 @@ impl Reader {
         #[cfg(feature = "mpf")]
         {
             self.read_raw_with_mpf(buf, mpf_data, mpf_app2_offset,
-                                   { let mut extra = raf_sub_image(raf_raw_image); extra.extend(mrw_sub_image(mrw_raw_image)); extra }, tiff_base,
+                                   { let mut extra = raf_sub_image(raf_raw_image); extra.extend(mrw_sub_image(mrw_raw_image)); extra.extend(x3f_fields); extra }, tiff_base,
                                    container_images)
         }
         #[cfg(not(feature = "mpf"))]
         {
-            self.read_raw_with_extra(buf, { let mut extra = raf_sub_image(raf_raw_image); extra.extend(mrw_sub_image(mrw_raw_image)); extra }, tiff_base,
+            self.read_raw_with_extra(buf, { let mut extra = raf_sub_image(raf_raw_image); extra.extend(mrw_sub_image(mrw_raw_image)); extra.extend(x3f_fields); extra }, tiff_base,
                                      container_images)
         }
     }

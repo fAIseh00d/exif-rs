@@ -483,9 +483,6 @@ fn jpeg_in_box<R: BufRead + Seek>(reader: &mut R, at: u64, size: u64) -> Option<
     where
         R: BufRead + Seek,
     {
-        /// Bytes between a `PRVW`/`THMB` box's start and its JPEG: the 8-byte
-        /// box header plus a 16-byte one of Canon's own.
-        const JPEG_AT: u64 = 24;
         const MAX_DEPTH: u32 = 4;
 
         fn walk<R: BufRead + Seek>(
