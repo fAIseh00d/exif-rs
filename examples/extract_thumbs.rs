@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::BufReader;
 use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -72,7 +72,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Extract image data
-            match extract_image(&mut reader, img.offset, img.length) {
+            // `extract_data`, not a private copy of it: the API knows things
+            // the arithmetic does not -- a Minolta preview's SOI byte is
+            // clobbered and is repaired there, so a hand-rolled read writes a
+            // file that will not open.
+            match img.extract_data(&mut reader) {
                 Ok(data) => {
                     std::fs::write(&output_path, &data)?;
                     println!("  ✓ Saved {} to: {} ({} bytes)",
@@ -109,14 +113,3 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Extract image data from a file at the given offset
-fn extract_image<R: Read + Seek>(
-    reader: &mut R,
-    offset: u64,
-    length: u32,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    reader.seek(SeekFrom::Start(offset))?;
-    let mut buffer = vec![0u8; length as usize];
-    reader.read_exact(&mut buffer)?;
-    Ok(buffer)
-}

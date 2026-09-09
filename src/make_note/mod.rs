@@ -56,6 +56,7 @@ pub mod nikon;
 pub mod sony;
 pub mod canon;
 pub mod fujifilm;
+pub mod minolta;
 pub mod olympus;
 pub mod samsung;
 pub mod apple;
@@ -146,6 +147,14 @@ pub fn parse_make_note_with_vendor(
             MakerNoteVendor::Samsung => {
                 // Samsung: Auto-detect byte order from IFD tag structure
                 Some(samsung::detect_samsung_byte_order(parse_data))
+            }
+            // Minolta has no header either, and falling through to `None`
+            // left the parser assuming little-endian on a big-endian block:
+            // 19 entries read as 4864 and every MRW failed with "Truncated
+            // IFD" -- silently, since a MakerNote that will not parse is not
+            // an error anywhere else.
+            MakerNoteVendor::Minolta => {
+                Some(minolta::detect_minolta_byte_order(parse_data))
             }
             MakerNoteVendor::Apple | MakerNoteVendor::Pentax | MakerNoteVendor::Ricoh |
             MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem => {

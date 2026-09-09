@@ -556,11 +556,19 @@ impl Exif {
         // Try to get MakerNote preview images
         #[cfg(feature = "make_note")]
         {
+            // **A MakerNote preview offset is TIFF-relative, like every
+            // other offset in the file.** It went in raw for as long as the
+            // only vendor read was Olympus, whose ORF puts the TIFF at byte
+            // zero so the two are the same number. An MRW's TIFF sits inside
+            // a `\0TTW` block 48 or 140 bytes in, and a JPEG's sits at 12.
             let maker_note_images = crate::subimg::extract_maker_note_preview_info(
                 &self.maker_note_fields,
                 &self.maker_note_vendor,
             );
-            images.extend(maker_note_images);
+            images.extend(maker_note_images.into_iter().map(|mut img| {
+                img.offset = self.file_offset(img.offset);
+                img
+            }));
 
             // Olympus keeps its full-size preview in the CameraSettings
             // subdirectory rather than the MakerNote's top level -- 975 KB on

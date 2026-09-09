@@ -89,6 +89,14 @@ pub enum MakerNoteVendor {
     /// Header: "SIGMA\0\0\0" or "FOVEON\0\0" (8 bytes)
     Sigma,
 
+    /// Minolta / Konica Minolta cameras
+    ///
+    /// **No header at all** — the block starts on its entry count. Its first
+    /// entry is `MakerNoteVersion`, whose ASCII `MLT0` value looks like a
+    /// signature and sits four bytes past where one would be, so matching it
+    /// as a header eats the entry count. Recognised from `Make` instead.
+    Minolta,
+
     /// Ricoh cameras some 
     /// Header: "RIOCH\0" or no header, starts directly with IFD
     Ricoh,
@@ -195,6 +203,12 @@ impl MakerNoteVendor {
                 MakerNoteVendor::Samsung
             } else if make_str.starts_with("PENTAX") || make_str.starts_with("RICOH") {
                 MakerNoteVendor::Pentax
+            } else if make_str.to_ascii_uppercase().contains("MINOLTA") {
+                // Four spellings across the 13 corpus bodies -- `MINOLTA`,
+                // `Minolta Co., Ltd.`, `KONICA MINOLTA` and `Konica Minolta
+                // Camera, Inc.` -- so `starts_with` on any one of them misses
+                // most of them.
+                MakerNoteVendor::Minolta
             } else if make_str.starts_with("SONY") {
                 // Sony's "SONY DSC \0\0\0" signature is on DSC-series JPEGs.
                 // An Alpha's raw carries a BARE IFD with no signature at all,
@@ -262,6 +276,7 @@ impl MakerNoteVendor {
             MakerNoteVendor::Fujifilm => 12,  // "FUJIFILM" + 4 bytes
             MakerNoteVendor::Leica => 8,      // "LEICA\0" + version (2 bytes)
             MakerNoteVendor::Samsung => 0,    // No header, starts directly with IFD
+            MakerNoteVendor::Minolta => 0,    // No header, starts directly with IFD
             MakerNoteVendor::Apple => 14,     // "Apple iOS\0" (10) + version (2) + "II/MM" (2) = 14 bytes
             MakerNoteVendor::Sigma => 10,     // "SIGMA\0\0\0" or "FOVEON\0\0" (8) + version (2) = 10 bytes
             MakerNoteVendor::Ricoh => 8,      // "RICOH\0II"  (8 ) + "II/MM"
@@ -308,6 +323,10 @@ impl MakerNoteVendor {
             // Panasonic, Canon, Sony, Leica, Sigma use TIFF-relative offsets
             MakerNoteVendor::Panasonic | MakerNoteVendor::Canon | MakerNoteVendor::Sony |
             MakerNoteVendor::Leica | MakerNoteVendor::Sigma => true,
+            // Minolta: measured on 12 bodies, `PreviewImageStart` counts from
+            // the TIFF header -- which in an MRW is the `\0TTW` block, 48
+            // bytes in on the DiMAGE compacts and 140 on the DSLRs.
+            MakerNoteVendor::Minolta => true,
             // Nikon, Olympus, OM System, Fujifilm, Samsung, Apple, Pentax - use MakerNote-relative offsets
             MakerNoteVendor::Nikon | MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem |
             MakerNoteVendor::Fujifilm | MakerNoteVendor::Samsung | MakerNoteVendor::Apple |
@@ -345,7 +364,7 @@ impl MakerNoteVendor {
             MakerNoteVendor::Panasonic | MakerNoteVendor::Canon | MakerNoteVendor::Sony |
             MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem | MakerNoteVendor::Fujifilm |
             MakerNoteVendor::Leica | MakerNoteVendor::Samsung | MakerNoteVendor::Apple |
-            MakerNoteVendor::Sigma => false,
+            MakerNoteVendor::Sigma | MakerNoteVendor::Minolta => false,
             // Subdirectories don't need TIFF headers (already inside parsed data)
             MakerNoteVendor::OlympusEquipment
             | MakerNoteVendor::OlympusCameraSettings
@@ -413,6 +432,7 @@ impl MakerTag {
             MakerNoteVendor::Fujifilm => super::fujifilm::tag_name(self.number),
             MakerNoteVendor::Leica => super::panasonic::tag_name(self.number),
             MakerNoteVendor::Samsung => super::samsung::tag_name(self.number),
+            MakerNoteVendor::Minolta => super::minolta::tag_name(self.number),
             MakerNoteVendor::Apple => super::apple::tag_name(self.number),
             MakerNoteVendor::Sigma => super::sigma::tag_name(self.number),
             MakerNoteVendor::Ricoh | MakerNoteVendor::Pentax => super::pentax::tag_name(self.number),
@@ -437,6 +457,7 @@ impl MakerTag {
             MakerNoteVendor::Fujifilm => super::fujifilm::tag_description(self.number),
             MakerNoteVendor::Leica => super::panasonic::tag_description(self.number),
             MakerNoteVendor::Samsung => super::samsung::tag_description(self.number),
+            MakerNoteVendor::Minolta => super::minolta::tag_description(self.number),
             MakerNoteVendor::Apple => super::apple::tag_description(self.number),
             MakerNoteVendor::Sigma => super::sigma::tag_description(self.number),
             MakerNoteVendor::Ricoh | MakerNoteVendor::Pentax => super::pentax::tag_description(self.number),
@@ -488,6 +509,7 @@ impl MakerNoteField {
             MakerNoteVendor::Fujifilm => super::fujifilm::display_value(tag.number, &value),
             MakerNoteVendor::Leica => super::panasonic::display_value(tag.number, &value),
             MakerNoteVendor::Samsung => super::samsung::display_value(tag.number, &value),
+            MakerNoteVendor::Minolta => super::minolta::display_value(tag.number, &value),
             MakerNoteVendor::Apple => super::apple::display_value(tag.number, &value),
             MakerNoteVendor::Sigma => super::sigma::display_value(tag.number, &value),
             MakerNoteVendor::Ricoh | MakerNoteVendor::Pentax => super::pentax::display_value(tag.number, &value),

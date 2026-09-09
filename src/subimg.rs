@@ -264,11 +264,12 @@ impl EmbeddedSubImage {
         }
         use std::io::SeekFrom;
         reader.seek(SeekFrom::Start(self.offset))?;
-        let mut head = [0u8; 2];
+        let mut head = [0u8; 4];
         reader.read_exact(&mut head)?;
-        if head != [0xFF, 0xD8] {
+        if !is_jpeg_start(&head) {
             return Err(Error::InvalidFormat("Embedded image is not a JPEG"));
         }
+        reader.seek(SeekFrom::Start(self.offset + 2))?;
         // Walk the marker chain to a frame header. Bounded by the image's own
         // declared length so a malformed chain cannot read past it.
         let mut pos: u64 = 2;
@@ -360,6 +361,18 @@ impl EmbeddedSubImage {
             return Err(Error::InvalidFormat("Embedded image is truncated"));
         }
 
+        // **Restore the SOI byte a Minolta body zeroed**, and only that one.
+        // The bytes are already ours -- a copy the caller decodes -- and
+        // handing back an image that cannot open, when the file says it is a
+        // JPEG and the very next marker confirms it, reports a broken address
+        // rather than a working one. exiftool does the same repair.
+        //
+        // Deliberately narrow: `?? D8 FF ??` and nothing else, so a file that
+        // really is not a JPEG is still returned untouched.
+        if data.first() != Some(&0xFF) && is_jpeg_start(&data) {
+            data[0] = 0xFF;
+        }
+
         Ok(data)
     }
 
@@ -402,6 +415,26 @@ impl EmbeddedSubImage {
 
 /// Helper function to extract preview image from MakerNote tag pairs
 #[cfg(feature = "make_note")]
+/// Is this the start of a JPEG, INCLUDING the one Minolta writes?
+///
+/// **A Minolta body clobbers the SOI's first byte.** Measured across the 13
+/// corpus MRWs: 12 state a MakerNote preview and only ONE -- a DiMAGE A200 --
+/// begins `FF D8`. The DSLRs (Dynax and Maxxum 7D, Dynax 5D, Alpha-7 and
+/// Alpha Sweet) begin `02 D8` and the DiMAGE compacts `00 D8`, with a valid
+/// `FF DB` or `FF C4` immediately after in every case. exiftool patches the
+/// byte back to `FF` on the way out, which is what makes its extracted
+/// previews decode where a byte-exact copy does not.
+///
+/// So the shape is checked rather than the first byte: `?? D8` followed by a
+/// real marker introducer. Anything else is not a JPEG and is refused as
+/// before.
+fn is_jpeg_start(head: &[u8]) -> bool {
+    // `.get(..4)`, because a bare slice pattern matches a slice of exactly
+    // that length -- so testing a whole image against it silently never
+    // matches, and the repair below quietly does nothing.
+    matches!(head.get(..4), Some([_, 0xD8, 0xFF, _]))
+}
+
 fn try_extract_preview(
     maker_note_fields: &std::collections::HashMap<
         MakerTag,
@@ -434,6 +467,11 @@ fn try_extract_preview(
 ///
 /// Currently supports:
 /// - Olympus: PreviewImageStart/PreviewImageLength tags (3 variants)
+/// - Minolta: the same two tags, which Olympus inherited from it
+///
+/// **The offsets are TIFF-relative and are returned that way.** The caller
+/// adds the TIFF header's own position, which is zero for an ORF and 48 or
+/// 140 for an MRW -- where the TIFF lives inside a `\0TTW` block.
 #[cfg(feature = "make_note")]
 pub(crate) fn extract_maker_note_preview_info(
     maker_note_fields: &std::collections::HashMap<
@@ -480,6 +518,22 @@ pub(crate) fn extract_maker_note_preview_info(
             // TODO: PreviewImageStart3/Length3 from CameraSettings subdirectory (0x2020)
             // This requires parsing the CameraSettings IFD structure
         }
+        // **Minolta states its preview exactly where Olympus does** -- 0x0088
+        // and 0x0089 -- because Olympus inherited the format. It is the only
+        // embedded image an MRW addresses: the container itself points at
+        // nothing, so without this a Minolta raw offers no picture at all.
+        MakerNoteVendor::Minolta => {
+            use crate::make_note::minolta;
+
+            if let Some(img) = try_extract_preview(
+                maker_note_fields,
+                &minolta::tags::PreviewImageStart,
+                &minolta::tags::PreviewImageLength,
+                EmbeddedSubImageSource::MakerNotePreview1,
+            ) {
+                images.push(img);
+            }
+        }
         _ => {}
     }
 
@@ -519,6 +573,21 @@ mod tests {
         let (file, img) = at(jpeg(1616, 1080), 64);
         let mut r = std::io::Cursor::new(file);
         assert_eq!(img.dimensions(&mut r).unwrap(), (1616, 1080));
+    }
+
+    /// A Dynax 7D's own first bytes, and a DiMAGE 7's: `02 D8` and `00 D8`,
+    /// each followed by a real marker. A DiMAGE A200 writes an ordinary
+    /// `FF D8`, and a slice that is not a JPEG at all stays refused.
+    #[test]
+    fn a_clobbered_soi_is_still_a_jpeg_start() {
+        assert!(is_jpeg_start(&[0x02, 0xD8, 0xFF, 0xDB]));
+        assert!(is_jpeg_start(&[0x00, 0xD8, 0xFF, 0xDB]));
+        assert!(is_jpeg_start(&[0xFF, 0xD8, 0xFF, 0xC4]));
+        assert!(!is_jpeg_start(&[0x00, 0x00, 0x00, 0x00]));
+        assert!(!is_jpeg_start(&[0xFF, 0xD8]));
+        // **Longer than four bytes still matches.** A bare slice pattern
+        // would not, and that is exactly how the repair came to do nothing.
+        assert!(is_jpeg_start(&[0x02, 0xD8, 0xFF, 0xDB, 0x00, 0x84]));
     }
 
     /// Stated dimensions win and cost no read at all.
