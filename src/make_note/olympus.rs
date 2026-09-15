@@ -678,6 +678,20 @@ where
 
     // For Olympus, the value is a direct LONG offset (stored in val field)
     // Type 13 (IFD) is not recognized by get_type_info, so we extract it directly
+    // **An old-format body stores each sub-directory as an UNDEFINED block that
+    // IS the IFD**, not as a pointer to one: an E-1 declares `CameraSettings`
+    // as 360 bytes of type 7. The entry's own offset has already located the
+    // block, so the IFD starts right there. Reading its first four bytes as a
+    // pointer sent the parser to a garbage offset and failed the whole
+    // MakerNote with "Truncated IFD count".
+    const UNDEFINED: u16 = 7;
+    if let Value::Unknown(UNDEFINED, count, block_pos) = val {
+        if count > 4 {
+            parse_fn(data, block_pos as usize, ifd_num)?;
+            return Ok(());
+        }
+    }
+
     if let Value::Unknown(_, _, value_pos) = val {
         // value_pos is where the 4-byte offset value is stored
         // Read the raw offset value and use it directly (Olympus uses MakerNote-relative offsets)

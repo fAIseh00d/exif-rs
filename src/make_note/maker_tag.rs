@@ -138,6 +138,15 @@ fn is_old_olympus(data: &[u8]) -> bool {
     data.starts_with(b"OLYMP\x00") && !data.starts_with(b"OLYMPUS")
 }
 
+/// The older Pentax MakerNote: `AOC\0`, a byte-order mark, then the IFD.
+///
+/// Written by Pentax DSLRs through the K-5 and 645D, and by the Samsung GX-1L
+/// built on the *ist DL. Its offsets count from the TIFF header, unlike the
+/// later `PENTAX \0` block's.
+pub(crate) fn is_aoc(data: &[u8]) -> bool {
+    data.starts_with(b"AOC\x00")
+}
+
 impl MakerNoteVendor {
 
     /// Detect vendor from MakerNote header data and optional Make field.
@@ -188,13 +197,18 @@ impl MakerNoteVendor {
         else if data.starts_with(b"RICOH\x00") {
             MakerNoteVendor::Ricoh
         }
-        // Pentax: "PENTAX \0" header
-        else if data.starts_with(b"PENTAX \x00") {
+        // Pentax, in three signatures, each followed by a byte-order mark:
+        // - "PENTAX \0", the current layout;
+        // - "AOC\0", the older one. Decided by the signature, not by Make: a
+        //   Samsung GX-1L is a Pentax *ist DL inside and writes this block,
+        //   which the Samsung parser cannot read;
+        // - "SAMSUNG\0", as Samsung's GX10/GX20 write the "PENTAX \0" layout
+        //   under their own name.
+        else if data.starts_with(b"PENTAX \x00") || is_aoc(data)
+            || data.starts_with(b"SAMSUNG\x00")
+        {
             MakerNoteVendor::Pentax
         }
-        // todo - AOC style ricoh and pentax
-        // else if data.starts_with(b"AOC\x00")
-        //
         // Canon/Samsung/Pentax/Ricoh: No header, detect from Make field
         else if let Some(make_str) = make {
             if make_str.starts_with("Canon") {
@@ -240,7 +254,36 @@ impl MakerNoteVendor {
             // newer header is 12 and this one is 8. Skipping 12 here eats the
             // first entry, which is the thumbnail.
             MakerNoteVendor::Olympus if is_old_olympus(data) => 8,
+            // **`AOC\0` is not `PENTAX \0II`.** Four signature bytes and a
+            // two-byte byte-order mark, so 6, where the newer header is 10.
+            // Skipping 10 started the IFD four bytes late: a K-r read its
+            // entry count out of the first entry and returned 88 fields whose
+            // numbers were mostly noise.
+            MakerNoteVendor::Pentax if is_aoc(data) => 6,
             _ => self.header_size(),
+        }
+    }
+
+    /// Whether offsets in THIS MakerNote count from the TIFF header rather
+    /// than from the MakerNote, the counterpart to [`Self::header_size_in`].
+    ///
+    /// Measured on stored values: an `AOC\0` K-r states `PreviewImageStart`
+    /// 34944, and the JPEG is at file offset 34944 in a PEF whose TIFF header
+    /// is at 0. A `PENTAX \0` K-3 states 72594 for a JPEG at 73440, which is
+    /// 72594 plus the MakerNote's position, 846. Same vendor, two bases.
+    ///
+    /// **The old Olympus format counts from the TIFF header too.** An E-1
+    /// states its `CameraSettings` block at 0x568, and the block is at file
+    /// offset 0x568 of an ORF whose MakerNote begins at 0x314. Read as
+    /// MakerNote-relative, an offset that happened to fall inside the block's
+    /// length pointed at the wrong bytes without any error, and one that did
+    /// not was left unresolved -- which is why a C5050Z's thumbnail at 4096
+    /// still came out right while an E-1 lost its whole MakerNote.
+    pub fn consider_tiff_offset_in(&self, data: &[u8]) -> bool {
+        match self {
+            MakerNoteVendor::Pentax if is_aoc(data) => true,
+            MakerNoteVendor::Olympus if is_old_olympus(data) => true,
+            _ => self.consider_tiff_offset(),
         }
     }
 
@@ -251,11 +294,7 @@ impl MakerNoteVendor {
     /// header that was actually skipped, and computing it from the nominal
     /// size would be wrong for exactly the files `header_size_in` exists for.
     pub fn offset_correction_in(&self, data: &[u8]) -> i32 {
-        // The old Olympus format counts its offsets from the TIFF header, not
-        // from the MakerNote -- a C5050Z puts its thumbnail at 4096, which is
-        // where the file really holds it. Correcting by the header would move
-        // it, and the value is outside this block in any case.
-        if self.has_tiff_header() || is_old_olympus(data) {
+        if self.has_tiff_header() {
             0
         } else {
             self.header_size_in(data) as i32

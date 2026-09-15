@@ -150,6 +150,29 @@ impl Exif {
         }
     }
 
+    /// Attach a MakerNote the CONTAINER located, for a file whose Exif has no
+    /// `MakerNote` tag to find one by -- a CR3's `CMT3`.
+    ///
+    /// `offset` is where the MakerNote's bytes start in [`Self::buf`], the
+    /// base its own value offsets count from.
+    #[cfg(feature = "make_note")]
+    pub(crate) fn set_container_maker_note(
+        &mut self,
+        vendor: MakerNoteVendor,
+        offset: u32,
+        parsed: Result<(Vec<MakerNoteField>, bool, Vec<crate::make_note::UnresolvedValue>), crate::Error>,
+    ) {
+        match parsed {
+            Ok((fields, _le, unresolved)) => {
+                self.maker_note_fields = fields.into_iter().map(|f| (f.tag, f)).collect();
+                self.maker_note_vendor = Ok(vendor);
+                self.maker_note_offset = offset;
+                self.maker_note_unresolved = unresolved;
+            }
+            Err(e) => self.maker_note_vendor = Err(e),
+        }
+    }
+
     /// Record images the container addresses directly, in FILE offsets.
     ///
     /// These do not go through [`Self::file_offset`]: a box tree states
@@ -252,7 +275,7 @@ impl Exif {
             .find(|e| e.ifd_num_tag().1 == Tag::MakerNote);
 
         let Some(maker_note_entry) = maker_note_entry else {
-            return (HashMap::new(), Err(crate::Error::MakerNoteNotFound), 0, Vec::new());
+            return Self::parse_dng_private_maker_note(buf, entries, little_endian);
         };
 
         // Get MakerNote field value
@@ -290,6 +313,92 @@ impl Exif {
         #[cfg(not(feature = "make_note"))]
         {
             (HashMap::new(), Err(crate::Error::NotFound("MakerNote parsing disabled")), 0, Vec::new())
+        }
+    }
+
+    /// A DNG keeps the camera's MakerNote in `DNGPrivateData` (0xC634, IFD0),
+    /// in one of two shapes, and has no `MakerNote` tag for either.
+    ///
+    /// - **A converter's copy**: `Adobe\0`, then blocks of a four-character
+    ///   name and a big-endian length. `MakN` holds the original file's byte
+    ///   order, the MakerNote's offset in that file, and the MakerNote. Its
+    ///   value offsets still count from the ORIGINAL file, so they are
+    ///   corrected by that recorded offset, and addresses that fall outside
+    ///   the block are dropped rather than recorded: they point into a file
+    ///   that is not this one.
+    /// - **An in-camera DNG**: the MakerNote itself, vendor header first
+    ///   (`PENTAX \0MM`, `SAMSUNG\0MM`), exactly as that camera writes it into
+    ///   a JPEG. Anything without a recognised signature is not a MakerNote
+    ///   and is left alone.
+    #[cfg(feature = "make_note")]
+    fn parse_dng_private_maker_note(
+        buf: &[u8],
+        entries: &[IfdEntry],
+        little_endian: bool,
+    ) -> (HashMap<MakerTag, MakerNoteField>, Result<MakerNoteVendor, crate::Error>, u32,
+          Vec<crate::make_note::UnresolvedValue>) {
+        use crate::endian::{BigEndian, Endian};
+        use crate::tag::Context;
+
+        const DNG_PRIVATE_DATA: Tag = Tag(Context::Tiff, 0xc634);
+        let not_found = || (HashMap::new(), Err(crate::Error::MakerNoteNotFound), 0, Vec::new());
+
+        let Some((_, count, at)) = entries.iter()
+            .find(|e| e.ifd_num_tag() == (In::PRIMARY, DNG_PRIVATE_DATA))
+            .and_then(|e| e.raw_value_location())
+        else {
+            return not_found();
+        };
+        let start = at as usize;
+        let Some(private) = buf.get(start..start.saturating_add(count as usize)) else {
+            return not_found();
+        };
+        let make = entries.iter()
+            .find(|e| e.ifd_num_tag() == (In::PRIMARY, Tag::Make))
+            .and_then(|e| match e.ref_field(buf, little_endian).value {
+                crate::value::Value::Ascii(ref vec) =>
+                    vec.first().and_then(|s| std::str::from_utf8(s).ok()),
+                _ => None,
+            });
+
+        // (bytes, where they start in `buf`, the base their offsets count
+        // from, the byte order the container states, whether they are a copy)
+        let located = if let Some(blocks) = private.strip_prefix(b"Adobe\0") {
+            let mut rest = blocks;
+            let mut found = None;
+            while rest.len() >= 8 {
+                let len = BigEndian::loadu32(rest, 4) as usize;
+                let Some(body) = rest.get(8..8usize.saturating_add(len)) else { break };
+                if &rest[..4] == b"MakN" && body.len() >= 6 {
+                    let stated_le = match &body[..2] {
+                        b"II" => Some(true),
+                        b"MM" => Some(false),
+                        _ => None,
+                    };
+                    let original = BigEndian::loadu32(body, 2);
+                    let note_at = start + (private.len() - rest.len()) + 8 + 6;
+                    found = Some((&body[6..], note_at as u32, original, stated_le, true));
+                    break;
+                }
+                rest = &rest[8 + len..];
+            }
+            found
+        } else if MakerNoteVendor::from_header(private, None) != MakerNoteVendor::Unknown {
+            Some((private, at, at, None, false))
+        } else {
+            None
+        };
+        let Some((note, note_at, base, stated_le, copied)) = located else {
+            return not_found();
+        };
+
+        match crate::make_note::parse_make_note_in_byte_order(note, base, make, stated_le) {
+            Ok((fields, vendor, _le, unresolved)) => {
+                let map = fields.into_iter().map(|f| (f.tag, f)).collect();
+                let unresolved = if copied { Vec::new() } else { unresolved };
+                (map, Ok(vendor), note_at, unresolved)
+            }
+            Err(e) => (HashMap::new(), Err(e), note_at, Vec::new()),
         }
     }
 
@@ -497,7 +606,10 @@ impl Exif {
                 Ok(crate::make_note::maker_tag::MakerNoteVendor::Olympus)
             );
             for u in &self.maker_note_unresolved {
-                if !olympus || u.tag != OLYMPUS_THUMBNAIL || u.len == 0 {
+                // The top-level 0x0100 only: a subdirectory reuses the number
+                // (`Equipment`'s is `CameraType2`, six ASCII bytes).
+                if !olympus || u.vendor != crate::make_note::maker_tag::MakerNoteVendor::Olympus
+                    || u.tag != OLYMPUS_THUMBNAIL || u.len == 0 {
                     continue;
                 }
                 images.push(EmbeddedSubImage {
@@ -579,7 +691,15 @@ impl Exif {
             //
             // **Its offsets count from the MakerNote's own start**, not the
             // TIFF header: 48652 stated, with the MakerNote 3572 bytes into
-            // the file, is 52224 -- which is where the SOI actually is.
+            // the file, is 52224 -- which is where the SOI actually is. Except
+            // in the old `OLYMP\0` format, which counts from the TIFF header:
+            // an E-1 states 34156, and the SOI is at 34156. The base is asked
+            // of the same rule the parser used, so the two cannot disagree.
+            let olympus_base = match (&self.maker_note_vendor,
+                                      self.buf.get(self.maker_note_offset as usize..)) {
+                (Ok(vendor), Some(note)) if vendor.consider_tiff_offset_in(note) => 0,
+                _ => self.maker_note_offset,
+            };
             const OLYMPUS_CS_PREVIEW_START: u16 = 0x0101;
             const OLYMPUS_CS_PREVIEW_LENGTH: u16 = 0x0102;
             let cs = |number: u16| {
@@ -599,7 +719,7 @@ impl Exif {
                             source: EmbeddedSubImageSource::MakerNotePreview3,
                             length: len,
                             offset: self.file_offset(u64::from(
-                                self.maker_note_offset.saturating_add(start))),
+                                olympus_base.saturating_add(start))),
                             subfile_type: None,
                             compression: None,
                             photometric: None,

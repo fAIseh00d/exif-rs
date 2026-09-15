@@ -165,30 +165,64 @@ impl Reader {
 
     /// Parses the Exif attributes from raw Exif data.
     /// If an error occurred, `exif::Error` is returned.
+    ///
+    /// The buffers are anonymous, so the first is read as IFD0 and every other
+    /// one as an Exif IFD. A CR3's boxes go through `read_from_container`,
+    /// where each one's name decides how it is read.
     pub fn read_raw_vec(&self, buffers: Vec<Vec<u8>>) -> Result<Exif, Error> {
-        self.read_raw_vec_with(buffers, Vec::new())
+        let named = buffers
+            .into_iter()
+            .enumerate()
+            .map(|(i, b)| (if i == 0 { *b"CMT1" } else { *b"CMT2" }, b))
+            .collect();
+        self.read_raw_vec_with(named, Vec::new())
     }
 
     /// `read_raw_vec`, plus images the CONTAINER addresses that no tag does.
-    fn read_raw_vec_with(&self, buffers: Vec<Vec<u8>>, previews: Vec<(u64, u32)>)
+    fn read_raw_vec_with(&self, boxes: Vec<isobmff::crx::CmtBox>, previews: Vec<(u64, u32)>)
                          -> Result<Exif, Error> {
+        use crate::tag::Context;
+
         let mut data = Vec::new();
         let mut parser = tiff::Parser::new();
         parser.continue_on_error = self.continue_on_error.then(|| Vec::new());
         // Join all buffers together
-        for buffer in &buffers {
+        for (_, buffer) in &boxes {
             data.extend_from_slice(buffer);
         }
+        // Each box is a whole TIFF, and only its NAME says which IFD it is.
+        #[cfg(feature = "make_note")]
+        let mut maker_note = None;
         let mut offset = 0;
-        for (idx, buffer) in buffers.iter().enumerate() {
-            let default_context = match idx {
-                0 => crate::tag::Context::Tiff,
-                _ => crate::tag::Context::Exif,
+        for (name, buffer) in &boxes {
+            let range = offset..offset + buffer.len();
+            let context = match name {
+                b"CMT1" => Some(Context::Tiff),
+                b"CMT4" => Some(Context::Gps),
+                // CMT3 is the Canon MakerNote, which is not an Exif IFD.
+                #[cfg(feature = "make_note")]
+                b"CMT3" => None,
+                _ => Some(Context::Exif),
             };
-            parser.parse_with_context_offset(&data[offset..offset + buffer.len()], default_context, offset as u32)?;
+            match context {
+                Some(ctx) => parser.parse_with_context_offset(&data[range], ctx, offset as u32)?,
+                #[cfg(feature = "make_note")]
+                None => {
+                    let parsed = crate::make_note::parse_tiff_make_note(
+                        &data[range], crate::make_note::maker_tag::MakerNoteVendor::Canon);
+                    maker_note = Some((offset as u32, parsed));
+                }
+                #[cfg(not(feature = "make_note"))]
+                None => {}
+            }
             offset += buffer.len();
         }
         let mut exif = Exif::new(data, parser.entries, parser.little_endian);
+        #[cfg(feature = "make_note")]
+        if let Some((at, parsed)) = maker_note {
+            exif.set_container_maker_note(
+                crate::make_note::maker_tag::MakerNoteVendor::Canon, at, parsed);
+        }
         exif.set_container_images(previews);
         match parser.continue_on_error {
             Some(v) if !v.is_empty() =>
@@ -433,6 +467,247 @@ mod tests {
         } else {
             panic!("partial result expected");
         }
+    }
+
+    /// A little-endian TIFF holding one IFD of SHORT entries, each one value.
+    fn tiff_le(entries: &[(u16, u16)]) -> Vec<u8> {
+        let mut t = b"II\x2a\0\x08\0\0\0".to_vec();
+        t.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        for &(tag, value) in entries {
+            t.extend_from_slice(&tag.to_le_bytes());
+            t.extend_from_slice(&3u16.to_le_bytes());
+            t.extend_from_slice(&1u32.to_le_bytes());
+            t.extend_from_slice(&value.to_le_bytes());
+            t.extend_from_slice(&[0, 0]);
+        }
+        t.extend_from_slice(&[0, 0, 0, 0]);
+        t
+    }
+
+    /// **A CR3's boxes are read by name**: `CMT3` is the Canon MakerNote and
+    /// `CMT4` the GPS IFD, and neither is an Exif IFD. Read as one, Canon's
+    /// `ColorSpace` (0x00B4) became an unnamed Exif tag with no vendor, and
+    /// GPSVersionID (0x0000) an unnamed Exif tag too.
+    #[cfg(feature = "make_note")]
+    #[test]
+    fn cr3_boxes_by_name() {
+        use crate::make_note::maker_tag::{MakerNoteVendor, MakerTag};
+
+        let boxes = vec![
+            (*b"CMT1", tiff_le(&[(0x0112, 1)])),   // Orientation
+            (*b"CMT2", tiff_le(&[(0xa001, 0xffff)])), // ColorSpace
+            (*b"CMT3", tiff_le(&[(0x00b4, 2)])),   // Canon ColorSpace
+            (*b"CMT4", tiff_le(&[(0x0005, 0)])),   // GPSAltitudeRef
+        ];
+        let exif = Reader::new().read_raw_vec_with(boxes, Vec::new()).unwrap();
+
+        assert_eq!(exif.maker_note_vendor().ok(), Some(MakerNoteVendor::Canon));
+        let colour = exif
+            .get_maker_note_field(&MakerTag::new(MakerNoteVendor::Canon, 0x00b4))
+            .expect("Canon ColorSpace as a maker-note field");
+        assert_eq!(colour.value.get_uint(0), Some(2));
+        assert!(exif.fields().all(|f| f.tag.number() != 0x00b4),
+                "the MakerNote must not also arrive as plain Exif");
+
+        assert_eq!(exif.get_field(Tag::Orientation, In::PRIMARY)
+                       .and_then(|f| f.value.get_uint(0)), Some(1));
+        assert_eq!(exif.get_field(Tag::ColorSpace, In::PRIMARY)
+                       .and_then(|f| f.value.get_uint(0)), Some(0xffff));
+        assert!(exif.get_field(Tag::GPSAltitudeRef, In::PRIMARY).is_some());
+    }
+
+    /// **An `AOC\0` Pentax MakerNote**: a 6-byte header, and value offsets
+    /// counted from the TIFF header. Read as a `PENTAX \0II` block (10 bytes,
+    /// MakerNote-relative) the IFD started four bytes late and every field
+    /// after it was noise.
+    #[cfg(feature = "make_note")]
+    #[test]
+    fn pentax_aoc_maker_note() {
+        use crate::make_note::maker_tag::{MakerNoteVendor, MakerTag};
+
+        let mut t = Vec::new();
+        t.extend_from_slice(b"MM\0\x2a\0\0\0\x08");
+        // IFD0 at 8: Make (out of line at 38) and the Exif IFD pointer (46).
+        t.extend_from_slice(&[0, 2]);
+        t.extend_from_slice(&[0x01, 0x0f, 0, 2, 0, 0, 0, 7, 0, 0, 0, 38]);
+        t.extend_from_slice(&[0x87, 0x69, 0, 4, 0, 0, 0, 1, 0, 0, 0, 46]);
+        t.extend_from_slice(&[0, 0, 0, 0]);
+        t.extend_from_slice(b"PENTAX\0\0"); // 38..46, padded
+        // Exif IFD at 46: MakerNote, 42 bytes at 64.
+        t.extend_from_slice(&[0, 1]);
+        t.extend_from_slice(&[0x92, 0x7c, 0, 7, 0, 0, 0, 42, 0, 0, 0, 64]);
+        t.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(t.len(), 64);
+        // MakerNote at 64: "AOC\0MM", then its IFD.
+        t.extend_from_slice(b"AOC\0MM");
+        t.extend_from_slice(&[0, 2]);
+        // 0x0037 ColorSpace = 1, inline.
+        t.extend_from_slice(&[0x00, 0x37, 0, 3, 0, 0, 0, 1, 0, 1, 0, 0]);
+        // 0x0002, three SHORTs out of line at TIFF offset 100.
+        t.extend_from_slice(&[0x00, 0x02, 0, 3, 0, 0, 0, 3, 0, 0, 0, 100]);
+        t.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(t.len(), 100);
+        t.extend_from_slice(&[0, 10, 0, 20, 0, 30]);
+
+        let exif = Reader::new().read_raw(t).unwrap();
+        assert_eq!(exif.maker_note_vendor().ok(), Some(MakerNoteVendor::Pentax));
+        let field = |n| exif.get_maker_note_field(&MakerTag::new(MakerNoteVendor::Pentax, n));
+        assert_eq!(field(0x0037).and_then(|f| f.value.get_uint(0)), Some(1));
+        let size = field(0x0002).expect("the out-of-line value resolves");
+        assert_eq!((0..3).map(|i| size.value.get_uint(i)).collect::<Vec<_>>(),
+                   vec![Some(10), Some(20), Some(30)]);
+        assert_eq!(exif.maker_note_fields().count(), 2);
+    }
+
+    /// **An old `OLYMP\0` MakerNote**: offsets counted from the TIFF header,
+    /// and each sub-directory an UNDEFINED block that is the IFD itself. The
+    /// shape an E-1 writes; read as MakerNote-relative pointers, the E-1 lost
+    /// every one of its MakerNote fields.
+    #[cfg(feature = "make_note")]
+    #[test]
+    fn olympus_old_format_maker_note() {
+        use crate::make_note::maker_tag::{MakerNoteVendor, MakerTag};
+
+        let mut t = Vec::new();
+        t.extend_from_slice(b"II\x2a\0\x08\0\0\0");
+        // IFD0 at 8: Make (out of line at 38) and the Exif IFD pointer (46).
+        t.extend_from_slice(&[2, 0]);
+        t.extend_from_slice(&[0x0f, 0x01, 2, 0, 8, 0, 0, 0, 38, 0, 0, 0]);
+        t.extend_from_slice(&[0x69, 0x87, 4, 0, 1, 0, 0, 0, 46, 0, 0, 0]);
+        t.extend_from_slice(&[0, 0, 0, 0]);
+        t.extend_from_slice(b"OLYMPUS\0"); // 38..46
+        // Exif IFD at 46: MakerNote, 122 bytes at 64.
+        t.extend_from_slice(&[1, 0]);
+        t.extend_from_slice(&[0x7c, 0x92, 7, 0, 122, 0, 0, 0, 64, 0, 0, 0]);
+        t.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(t.len(), 64);
+        // MakerNote at 64: "OLYMP\0" + version, then its IFD.
+        t.extend_from_slice(b"OLYMP\0\x01\0");
+        t.extend_from_slice(&[3, 0]);
+        // 0x0200, three LONGs out of line at TIFF offset 114.
+        t.extend_from_slice(&[0x00, 0x02, 4, 0, 3, 0, 0, 0, 114, 0, 0, 0]);
+        // 0x2010 Equipment, an 18-byte UNDEFINED block at TIFF offset 126.
+        t.extend_from_slice(&[0x10, 0x20, 7, 0, 18, 0, 0, 0, 126, 0, 0, 0]);
+        // 0x2020 CameraSettings, a 42-byte UNDEFINED block at TIFF offset 144.
+        t.extend_from_slice(&[0x20, 0x20, 7, 0, 42, 0, 0, 0, 144, 0, 0, 0]);
+        t.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(t.len(), 114);
+        t.extend_from_slice(&[1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0]);
+        // Equipment: 0x0100 CameraType2, six ASCII bytes OUTSIDE the MakerNote.
+        t.extend_from_slice(&[1, 0]);
+        t.extend_from_slice(&[0x00, 0x01, 2, 0, 6, 0, 0, 0, 0x88, 0x13, 0, 0]);
+        t.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(t.len(), 144);
+        // CameraSettings: 0x0507 ColorSpace = 1, and a preview at TIFF offset
+        // 200, 4 bytes long.
+        t.extend_from_slice(&[3, 0]);
+        t.extend_from_slice(&[0x07, 0x05, 3, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
+        t.extend_from_slice(&[0x01, 0x01, 4, 0, 1, 0, 0, 0, 200, 0, 0, 0]);
+        t.extend_from_slice(&[0x02, 0x01, 4, 0, 1, 0, 0, 0, 4, 0, 0, 0]);
+        t.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(t.len(), 186);
+        t.resize(200, 0);
+        t.extend_from_slice(&[0xff, 0xd8, 0xff, 0xd9]);
+
+        let exif = Reader::new().read_raw(t).unwrap();
+        assert_eq!(exif.maker_note_vendor().ok(), Some(MakerNoteVendor::Olympus));
+        let mode = exif
+            .get_maker_note_field(&MakerTag::new(MakerNoteVendor::Olympus, 0x0200))
+            .expect("the out-of-line value resolves from the TIFF header");
+        assert_eq!((0..3).map(|i| mode.value.get_uint(i)).collect::<Vec<_>>(),
+                   vec![Some(1), Some(2), Some(3)]);
+        let colour = exif
+            .get_maker_note_field(&MakerTag::new(MakerNoteVendor::OlympusCameraSettings, 0x0507))
+            .expect("the CameraSettings block is parsed as an IFD");
+        assert_eq!(colour.value.get_uint(0), Some(1));
+
+        use crate::subimg::EmbeddedSubImageSource;
+        let images = exif.embedded_images();
+        assert!(images.iter().any(|i| i.source == EmbeddedSubImageSource::MakerNotePreview3
+                                    && i.offset == 200 && i.length == 4),
+                "the preview address counts from the TIFF header: {images:?}");
+        assert!(images.iter().all(|i| i.source != EmbeddedSubImageSource::MakerNoteValue),
+                "Equipment's 0x0100 is CameraType2, not the thumbnail: {images:?}");
+    }
+
+    /// A little-endian TIFF whose IFD0 holds `Make` and a `DNGPrivateData`
+    /// BYTE value of `private`.
+    #[cfg(feature = "make_note")]
+    fn dng_with_private(make: &[u8], private: &[u8]) -> Vec<u8> {
+        let make_at = 38u32;
+        let private_at = make_at + make.len() as u32;
+        let mut t = b"II\x2a\0\x08\0\0\0".to_vec();
+        t.extend_from_slice(&[2, 0]);
+        t.extend_from_slice(&[0x0f, 0x01, 2, 0]);
+        t.extend_from_slice(&(make.len() as u32).to_le_bytes());
+        t.extend_from_slice(&make_at.to_le_bytes());
+        t.extend_from_slice(&[0x34, 0xc6, 1, 0]);
+        t.extend_from_slice(&(private.len() as u32).to_le_bytes());
+        t.extend_from_slice(&private_at.to_le_bytes());
+        t.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(t.len(), 38);
+        t.extend_from_slice(make);
+        t.extend_from_slice(private);
+        t
+    }
+
+    /// **A DNG converter's MakerNote copy**: `DNGPrivateData` = `Adobe\0` and
+    /// named blocks; `MakN` states the original byte order and the MakerNote's
+    /// offset in the original file, which its value offsets still count from.
+    #[cfg(feature = "make_note")]
+    #[test]
+    fn dng_adobe_makn_maker_note() {
+        use crate::make_note::maker_tag::{MakerNoteVendor, MakerTag};
+
+        // A big-endian Canon MakerNote that sat at offset 1000 of the original:
+        // 0x00B4 ColorSpace = 2 inline, 0x0002 three SHORTs at original 1030.
+        let mut note = vec![0, 2];
+        note.extend_from_slice(&[0x00, 0xb4, 0, 3, 0, 0, 0, 1, 0, 2, 0, 0]);
+        note.extend_from_slice(&[0x00, 0x02, 0, 3, 0, 0, 0, 3, 0, 0, 0x04, 0x06]);
+        note.extend_from_slice(&[0, 0, 0, 0]);
+        note.extend_from_slice(&[0, 10, 0, 20, 0, 30]);
+        let mut makn = b"MM".to_vec();
+        makn.extend_from_slice(&1000u32.to_be_bytes());
+        makn.extend_from_slice(&note);
+
+        let mut private = b"Adobe\0".to_vec();
+        private.extend_from_slice(b"Junk");
+        private.extend_from_slice(&4u32.to_be_bytes());
+        private.extend_from_slice(&[9, 9, 9, 9]);
+        private.extend_from_slice(b"MakN");
+        private.extend_from_slice(&(makn.len() as u32).to_be_bytes());
+        private.extend_from_slice(&makn);
+
+        let exif = Reader::new().read_raw(dng_with_private(b"Canon\0", &private)).unwrap();
+        assert_eq!(exif.maker_note_vendor().ok(), Some(MakerNoteVendor::Canon));
+        let field = |n| exif.get_maker_note_field(&MakerTag::new(MakerNoteVendor::Canon, n));
+        assert_eq!(field(0x00b4).and_then(|f| f.value.get_uint(0)), Some(2),
+                   "read in the byte order MakN states");
+        let values = field(0x0002).expect("offsets corrected by the original position");
+        assert_eq!((0..3).map(|i| values.value.get_uint(i)).collect::<Vec<_>>(),
+                   vec![Some(10), Some(20), Some(30)]);
+    }
+
+    /// **An in-camera DNG's MakerNote** is the vendor block itself, header
+    /// first. Big-endian `PENTAX \0MM` also pins the byte-order table: its
+    /// signature carries a space, and without it the block was read
+    /// little-endian (1 came back as 256).
+    #[cfg(feature = "make_note")]
+    #[test]
+    fn dng_in_camera_pentax_maker_note() {
+        use crate::make_note::maker_tag::{MakerNoteVendor, MakerTag};
+
+        let mut private = b"PENTAX \0MM".to_vec();
+        private.extend_from_slice(&[0, 1]);
+        private.extend_from_slice(&[0x00, 0x37, 0, 3, 0, 0, 0, 1, 0, 1, 0, 0]);
+        private.extend_from_slice(&[0, 0, 0, 0]);
+
+        let exif = Reader::new().read_raw(dng_with_private(b"PENTAX\0", &private)).unwrap();
+        assert_eq!(exif.maker_note_vendor().ok(), Some(MakerNoteVendor::Pentax));
+        let colour = exif
+            .get_maker_note_field(&MakerTag::new(MakerNoteVendor::Pentax, 0x0037))
+            .expect("Pentax ColorSpace");
+        assert_eq!(colour.value.get_uint(0), Some(1));
     }
 }
 

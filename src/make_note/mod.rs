@@ -129,6 +129,31 @@ pub fn parse_make_note_with_vendor(
     ),
     Error,
 > {
+    parse_make_note_in_byte_order(data, tiff_offset, make, None)
+}
+
+/// As [`parse_make_note_with_vendor`], for a MakerNote whose CONTAINER states
+/// the byte order.
+///
+/// A DNG converter copies a camera's MakerNote into `DNGPrivateData` and
+/// records the original file's byte order beside it. Most vendors' blocks do
+/// not say it themselves (a Canon or Sony MakerNote is a bare IFD), so without
+/// that record a big-endian original is read little-endian. A byte-order mark
+/// inside the block, where a vendor writes one, still describes the block.
+pub(crate) fn parse_make_note_in_byte_order(
+    data: &[u8],
+    tiff_offset: u32,
+    make: Option<&str>,
+    stated_le: Option<bool>,
+) -> Result<
+    (
+        Vec<maker_tag::MakerNoteField>,
+        maker_tag::MakerNoteVendor,
+        bool,
+        Vec<UnresolvedValue>,
+    ),
+    Error,
+> {
     use maker_tag::{MakerNoteField, MakerNoteVendor, MakerTag};
 
     // Step 1: Detect vendor from header and Make field
@@ -146,7 +171,7 @@ pub fn parse_make_note_with_vendor(
         match vendor {
             MakerNoteVendor::Samsung => {
                 // Samsung: Auto-detect byte order from IFD tag structure
-                Some(samsung::detect_samsung_byte_order(parse_data))
+                stated_le.or_else(|| Some(samsung::detect_samsung_byte_order(parse_data)))
             }
             // Minolta has no header either, and falling through to `None`
             // left the parser assuming little-endian on a big-endian block:
@@ -154,19 +179,18 @@ pub fn parse_make_note_with_vendor(
             // IFD" -- silently, since a MakerNote that will not parse is not
             // an error anywhere else.
             MakerNoteVendor::Minolta => {
-                Some(minolta::detect_minolta_byte_order(parse_data))
+                stated_le.or_else(|| Some(minolta::detect_minolta_byte_order(parse_data)))
             }
             MakerNoteVendor::Apple | MakerNoteVendor::Pentax | MakerNoteVendor::Ricoh |
             MakerNoteVendor::Olympus | MakerNoteVendor::OMSystem => {
                 // Apple: Detect byte order from header
                 // Pentax/Ricoh: Detect byte order from header ("II" or "MM")
                 // Olympus/OM System: Detect byte order from header ("II" or "MM")
-                detect_makernote_byte_order(data)
+                detect_makernote_byte_order(data).or(stated_le)
             }
             _ => {
-                // Default for other vendors
-                None
-
+                // No mark in the block; the container may have stated one.
+                stated_le
             }
         }
     } else {
@@ -177,7 +201,7 @@ pub fn parse_make_note_with_vendor(
     // Step 4: Parse with offset correction
     let offset_correction = vendor.offset_correction_in(data);
 
-    let consider_tiff_offset = vendor.consider_tiff_offset();
+    let consider_tiff_offset = vendor.consider_tiff_offset_in(data);
 
     let mut parser = MakerNoteParser::with_offset_correction(
         vendor,
@@ -206,12 +230,46 @@ pub fn parse_make_note_with_vendor(
     Ok((maker_fields, vendor, le, parser.unresolved))
 }
 
+/// A MakerNote that is a complete TIFF of its own, whose vendor the CONTAINER
+/// states.
+///
+/// A CR3 keeps its Canon MakerNote in the `CMT3` box: byte order, 42, an IFD
+/// offset, then the IFD, with every value offset counting from that TIFF
+/// header. There is no `MakerNote` tag pointing at it and no vendor header in
+/// front of it, so neither route [`parse_make_note_with_vendor`] takes can
+/// find it; the box name is what says what it is.
+pub(crate) fn parse_tiff_make_note(
+    data: &[u8],
+    vendor: MakerNoteVendor,
+) -> Result<(Vec<maker_tag::MakerNoteField>, bool, Vec<UnresolvedValue>), Error> {
+    use maker_tag::{MakerNoteField, MakerTag};
+
+    let mut parser = MakerNoteParser::with_offset_correction(vendor, false, 0, 0);
+    parser.has_tiff_header = true;
+    parser.parse(data, None)?;
+    let le = parser.little_endian;
+    let fields = parser
+        .entries
+        .into_iter()
+        .map(|(entry, entry_vendor)| {
+            let field = entry.into_field_generic(data, le);
+            MakerNoteField::new(MakerTag::new(entry_vendor, field.tag.1), field.ifd_num, field.value)
+        })
+        .collect();
+    Ok((fields, le, parser.unresolved))
+}
+
 /// An entry the MakerNote declares but cannot resolve within its own bytes.
 ///
 /// `offset` is as the file states it -- uncorrected -- because the base it
 /// counts from is the vendor's business and the caller's to apply.
+///
+/// `vendor` is the directory the entry sits in, a subdirectory's own vendor
+/// where there is one: a tag number means nothing without it, and Olympus uses
+/// 0x0100 for the top-level thumbnail and for `CameraType2` in `Equipment`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnresolvedValue {
+    pub vendor: maker_tag::MakerNoteVendor,
     pub tag: u16,
     pub typ: u16,
     pub count: u32,
@@ -376,7 +434,7 @@ impl MakerNoteParser {
             }
             let entry = Self::parse_ifd_entry::<E>(
                 data, offset, tiff_correction, self.offset_correction,
-                &mut self.unresolved);
+                self.vendor, &mut self.unresolved);
             offset += 12;
             let (tag, val) = match entry {
                 Ok(Some(x)) => x,
@@ -457,6 +515,7 @@ impl MakerNoteParser {
     /// this block; it has been recorded in `unresolved`.
     fn parse_ifd_entry<E>(data: &[u8], offset: usize, tiff_correction: i32,
                           offset_correction: i32,
+                          vendor: MakerNoteVendor,
                           unresolved: &mut Vec<UnresolvedValue>)
                           -> Result<Option<(u16, Value)>, Error> where E: Endian {
         // The size of entry has been checked in parse_ifd().
@@ -480,6 +539,7 @@ impl MakerNoteParser {
                 // **Outside this block.** Record where, and let the caller
                 // carry on with the rest of the MakerNote.
                 unresolved.push(UnresolvedValue {
+                    vendor,
                     tag,
                     typ,
                     count: cnt,
@@ -525,9 +585,15 @@ impl MakerNoteParser {
 pub(crate) fn detect_makernote_byte_order(data: &[u8]) -> Option<bool> {
     const TABLE: &[(&[u8], usize, Option<bool>)] = &[
         // Ricoh / Pentax / Olympus
-        // (b"AOC\x00",        4,  None), // todo - Need more research
+        (b"AOC\x00",        4,  None),
         (b"RICOH\x00",      6,  None),
-        (b"PENTAX\x00",     8,  None),
+        // The signature is `PENTAX ` WITH its space, then NUL. Written as
+        // `PENTAX\0` this never matched, so a big-endian `PENTAX \0MM` block
+        // (a K-r's in-camera DNG) was read little-endian.
+        (b"PENTAX \x00",    8,  None),
+        // Samsung's GX10/GX20 are Pentax bodies and write Pentax's layout
+        // under their own name.
+        (b"SAMSUNG\x00",    8,  None),
         (b"OLYMPUS\x00",    8,  None),
         (b"OLYMP\x00",      8,  None),
         (b"OM SYSTEM",     12,  None),

@@ -148,6 +148,23 @@ impl IfdEntry {
         }
     }
 
+    /// Where this entry's value bytes are, as (type, count, offset into the
+    /// TIFF data), while the value is still unparsed. `None` once parsed.
+    ///
+    /// Needed where the bytes themselves are a structure to walk: a BYTE value
+    /// parses into a plain `Vec<u8>` that no longer says where it came from,
+    /// and a DNG's `DNGPrivateData` is BYTE.
+    #[cfg(feature = "make_note")]
+    pub(crate) fn raw_value_location(&self) -> Option<(u16, u32, u32)> {
+        if self.field.is_fixed() {
+            return None;
+        }
+        match self.field.get_mut().value {
+            Value::Unknown(typ, cnt, ofs) => Some((typ, cnt, ofs)),
+            _ => None,
+        }
+    }
+
     pub fn ref_field<'a>(&'a self, data: &[u8], le: bool) -> &'a Field {
         self.parse(data, le);
         self.field.get_ref()

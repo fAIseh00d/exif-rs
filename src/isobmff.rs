@@ -637,10 +637,21 @@ fn jpeg_in_box<R: BufRead + Seek>(reader: &mut R, at: u64, size: u64) -> Option<
     where
         R: BufRead + Seek,
     {
-        Ok(get_exif_attr_vec(reader)?.first().cloned().unwrap_or_else(|| Vec::new()))
+        Ok(get_exif_attr_vec(reader)?.into_iter().next().map(|(_, b)| b).unwrap_or_default())
     }
 
-    pub fn get_exif_attr_vec<R>(reader: &mut R) -> Result<Vec<Vec<u8>>, Error>
+    /// One of Canon's metadata boxes: its name (`CMT1`..`CMT4`) and its body.
+    pub type CmtBox = ([u8; 4], Vec<u8>);
+
+    /// Canon's metadata boxes, each with its name, in file order.
+    ///
+    /// **The name is the only thing that says what a box holds.** All four are
+    /// complete TIFFs, and nothing inside one distinguishes them: `CMT1` is
+    /// IFD0, `CMT2` the Exif IFD, `CMT3` the Canon MakerNote and `CMT4` the GPS
+    /// IFD. Handed over as an anonymous list, the reader parsed the last three
+    /// the same way, so the MakerNote arrived as ordinary Exif tags with no
+    /// vendor and the GPS tags under the wrong context.
+    pub fn get_exif_attr_vec<R>(reader: &mut R) -> Result<Vec<CmtBox>, Error>
     where
         R: BufRead + Seek,
     {
@@ -668,7 +679,7 @@ fn jpeg_in_box<R: BufRead + Seek>(reader: &mut R, at: u64, size: u64) -> Option<
 
         /// Extracts the Exif attributes from raw Exif data for CR3 the result are 4 non-contiguous buffer segments
         /// If an error occurred, `exif::Error` is returned.
-        fn parse(&mut self) -> Result<Vec<Vec<u8>>, Error> {
+        fn parse(&mut self) -> Result<Vec<CmtBox>, Error> {
             while let Some((size, boxtype)) = self.read_box_header()? {
                 match &boxtype {
                     b"ftyp" => {
@@ -695,7 +706,7 @@ fn jpeg_in_box<R: BufRead + Seek>(reader: &mut R, at: u64, size: u64) -> Option<
             Err(Error::NotFound("CR3"))
         }
 
-        fn parse_moov(&mut self, out_data: &mut Vec<Vec<u8>>, mut split: BoxSplitter) -> Result<(), Error> {
+        fn parse_moov(&mut self, out_data: &mut Vec<CmtBox>, mut split: BoxSplitter) -> Result<(), Error> {
             //let indent = indent + 1;
             while let Ok((boxtype, mut boxbody)) = split.child_box() {
                 let size = boxbody.len();
@@ -706,7 +717,9 @@ fn jpeg_in_box<R: BufRead + Seek>(reader: &mut R, at: u64, size: u64) -> Option<
                         }
                     }
                     b"CMT1" | b"CMT2" | b"CMT3" | b"CMT4" => {
-                        out_data.push(Vec::from(boxbody.slice(size)?));
+                        let mut name = [0u8; 4];
+                        name.copy_from_slice(&boxtype[..4]);
+                        out_data.push((name, Vec::from(boxbody.slice(size)?)));
                     }
                     _ => {
                         boxbody.slice(size)?;
