@@ -129,6 +129,8 @@ impl Exif {
         #[cfg(feature = "make_note")]
         let (maker_note_fields, maker_note_vendor, maker_note_offset, maker_note_unresolved) =
             Self::parse_maker_note_internal(&buf, &entries, little_endian);
+        #[cfg(feature = "make_note")]
+        let maker_note_fields = Self::with_positional_tables(maker_note_fields, &buf, &entries, little_endian);
 
         Self {
             buf: buf,
@@ -150,6 +152,28 @@ impl Exif {
         }
     }
 
+    /// A parsed MakerNote with each positional table's entries added as
+    /// fields of their own ([`crate::make_note::binary_table`]). IFD0's
+    /// `Model` is read only to tell Minolta's two 0x0114 layouts apart.
+    #[cfg(feature = "make_note")]
+    fn with_positional_tables(
+        mut fields: HashMap<MakerTag, MakerNoteField>,
+        buf: &[u8],
+        entries: &[IfdEntry],
+        little_endian: bool,
+    ) -> HashMap<MakerTag, MakerNoteField> {
+        let model = entries.iter()
+            .find(|e| e.ifd_num_tag() == (In::PRIMARY, Tag::Model))
+            .and_then(|e| match e.ref_field(buf, little_endian).value {
+                crate::value::Value::Ascii(ref vec) =>
+                    vec.first().and_then(|s| std::str::from_utf8(s).ok()),
+                _ => None,
+            })
+            .map(|m| m.trim_end_matches(['\0', ' ']));
+        crate::make_note::binary_table::expand(&mut fields, model);
+        fields
+    }
+
     /// Attach a MakerNote the CONTAINER located, for a file whose Exif has no
     /// `MakerNote` tag to find one by -- a CR3's `CMT3`.
     ///
@@ -164,7 +188,9 @@ impl Exif {
     ) {
         match parsed {
             Ok((fields, _le, unresolved)) => {
-                self.maker_note_fields = fields.into_iter().map(|f| (f.tag, f)).collect();
+                self.maker_note_fields = Self::with_positional_tables(
+                    fields.into_iter().map(|f| (f.tag, f)).collect(),
+                    &self.buf, &self.entries, self.little_endian);
                 self.maker_note_vendor = Ok(vendor);
                 self.maker_note_offset = offset;
                 self.maker_note_unresolved = unresolved;
@@ -215,6 +241,8 @@ impl Exif {
         #[cfg(feature = "make_note")]
         let (maker_note_fields, maker_note_vendor, maker_note_offset, maker_note_unresolved) =
             Self::parse_maker_note_internal(&buf, &entries, little_endian);
+        #[cfg(feature = "make_note")]
+        let maker_note_fields = Self::with_positional_tables(maker_note_fields, &buf, &entries, little_endian);
 
         // Parse MPF fields
         let mpf_fields = Self::parse_mpf_internal(&mpf_buf, mpf_app2_offset, little_endian);

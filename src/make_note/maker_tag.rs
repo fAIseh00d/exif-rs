@@ -125,6 +125,21 @@ pub enum MakerNoteVendor {
     /// Olympus RawInfo subdirectory (0x3000)
     OlympusRawInfo,
 
+    /// Canon `ColorInfo` (0x4003), one field per array position; see
+    /// `make_note::binary_table`.
+    CanonColorInfo,
+
+    /// Minolta `CameraSettings7D` (0x0004), one field per position.
+    MinoltaCameraSettings7D,
+
+    /// Minolta `CameraSettings5D` (0x0114 on the Dynax/Maxxum 5D and Alpha
+    /// Sweet), one field per position.
+    MinoltaCameraSettings5D,
+
+    /// Minolta `CameraSettingsA100` (0x0114 on the Sony DSLR-A100), one field
+    /// per position.
+    MinoltaCameraSettingsA100,
+
     /// Unknown or unsupported vendor
     Unknown,
 }
@@ -376,7 +391,11 @@ impl MakerNoteVendor {
             | MakerNoteVendor::OlympusRawDevelopment
             | MakerNoteVendor::OlympusImageProcessing
             | MakerNoteVendor::OlympusFocusInfo
-            | MakerNoteVendor::OlympusRawInfo => false,
+            | MakerNoteVendor::OlympusRawInfo
+            | MakerNoteVendor::CanonColorInfo
+            | MakerNoteVendor::MinoltaCameraSettings7D
+            | MakerNoteVendor::MinoltaCameraSettings5D
+            | MakerNoteVendor::MinoltaCameraSettingsA100 => false,
             // Default
             MakerNoteVendor::Unknown => false,
         }
@@ -410,7 +429,11 @@ impl MakerNoteVendor {
             | MakerNoteVendor::OlympusRawDevelopment
             | MakerNoteVendor::OlympusImageProcessing
             | MakerNoteVendor::OlympusFocusInfo
-            | MakerNoteVendor::OlympusRawInfo => false,
+            | MakerNoteVendor::OlympusRawInfo
+            | MakerNoteVendor::CanonColorInfo
+            | MakerNoteVendor::MinoltaCameraSettings7D
+            | MakerNoteVendor::MinoltaCameraSettings5D
+            | MakerNoteVendor::MinoltaCameraSettingsA100 => false,
             // Unknown vendors - assume TIFF header exists (for generic parsing and tests)
             MakerNoteVendor::Unknown => true,
         }
@@ -481,6 +504,10 @@ impl MakerTag {
             MakerNoteVendor::OlympusImageProcessing => super::olympus::olympus_image_processing_tag_name(self.number),
             MakerNoteVendor::OlympusFocusInfo => super::olympus::olympus_focus_info_tag_name(self.number),
             MakerNoteVendor::OlympusRawInfo => super::olympus::olympus_raw_info_tag_name(self.number),
+            MakerNoteVendor::CanonColorInfo => super::binary_table::canon_color_info::tag_name(self.number),
+            MakerNoteVendor::MinoltaCameraSettings7D => super::binary_table::minolta_camera_settings_7d::tag_name(self.number),
+            MakerNoteVendor::MinoltaCameraSettings5D => super::binary_table::minolta_camera_settings_5d::tag_name(self.number),
+            MakerNoteVendor::MinoltaCameraSettingsA100 => super::binary_table::minolta_camera_settings_a100::tag_name(self.number),
             _ => None,
         }
     }
@@ -506,6 +533,10 @@ impl MakerTag {
             MakerNoteVendor::OlympusImageProcessing => super::olympus::olympus_image_processing_tag_description(self.number),
             MakerNoteVendor::OlympusFocusInfo => super::olympus::olympus_focus_info_tag_description(self.number),
             MakerNoteVendor::OlympusRawInfo => super::olympus::olympus_raw_info_tag_description(self.number),
+            MakerNoteVendor::CanonColorInfo => super::binary_table::canon_color_info::tag_description(self.number),
+            MakerNoteVendor::MinoltaCameraSettings7D => super::binary_table::minolta_camera_settings_7d::tag_description(self.number),
+            MakerNoteVendor::MinoltaCameraSettings5D => super::binary_table::minolta_camera_settings_5d::tag_description(self.number),
+            MakerNoteVendor::MinoltaCameraSettingsA100 => super::binary_table::minolta_camera_settings_a100::tag_description(self.number),
             _ => None,
         }
     }
@@ -558,6 +589,10 @@ impl MakerNoteField {
             MakerNoteVendor::OlympusImageProcessing => super::olympus::olympus_image_processing_display_value(tag.number, &value),
             MakerNoteVendor::OlympusFocusInfo => super::olympus::olympus_focus_info_display_value(tag.number, &value),
             MakerNoteVendor::OlympusRawInfo => super::olympus::olympus_raw_info_display_value(tag.number, &value),
+            MakerNoteVendor::CanonColorInfo => super::binary_table::canon_color_info::display_value(tag.number, &value),
+            MakerNoteVendor::MinoltaCameraSettings7D => super::binary_table::minolta_camera_settings_7d::display_value(tag.number, &value),
+            MakerNoteVendor::MinoltaCameraSettings5D => super::binary_table::minolta_camera_settings_5d::display_value(tag.number, &value),
+            MakerNoteVendor::MinoltaCameraSettingsA100 => super::binary_table::minolta_camera_settings_a100::display_value(tag.number, &value),
             _ => None,
         };
 

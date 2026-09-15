@@ -62,6 +62,11 @@ pub mod samsung;
 pub mod apple;
 pub mod sigma;
 pub mod pentax;
+pub mod binary_table;
+
+/// Sony 0xB028, `MinoltaMakerNote`: the offset of a Minolta MakerNote IFD
+/// nested in a Sony one (the DSLR-A100).
+const SONY_MINOLTA_MAKER_NOTE: u16 = 0xb028;
 
 /// Parse MakerNote data with offset correction.
 ///
@@ -479,6 +484,32 @@ impl MakerNoteParser {
                         ifd_num: In(ifd_num),
                         value: val,
                     }), self.vendor));
+                    continue;
+                }
+                // **A Sony DSLR-A100 keeps a whole Minolta MakerNote IFD inside
+                // its Sony one**, addressed by 0xB028 (`MinoltaMakerNote`) from
+                // the TIFF header like every other Sony offset; a zero means it
+                // is absent. Its entries are Minolta's, so they are read under
+                // that vendor. The pointer itself is kept as a field.
+                (_, MakerNoteVendor::Sony) if tag.1 == SONY_MINOLTA_MAKER_NOTE && ctx == Context::Tiff => {
+                    const LONG: u16 = 4;
+                    let pointer = match &val {
+                        Value::Unknown(LONG, 1, pos) => Some(E::loadu32(data, *pos as usize)),
+                        _ => None,
+                    };
+                    self.entries.push((IfdEntry::from_field(Field {
+                        tag, ifd_num: In(ifd_num), value: val }), self.vendor));
+                    if let Some(raw) = pointer.filter(|&p| p != 0) {
+                        let at = i64::from(raw) - i64::from(self.offset_correction)
+                            - i64::from(tiff_correction);
+                        if let Ok(at) = usize::try_from(at) {
+                            let saved_vendor = self.vendor;
+                            self.vendor = MakerNoteVendor::Minolta;
+                            let result = self.parse_ifd::<E>(data, at, Context::Tiff, ifd_num);
+                            self.vendor = saved_vendor;
+                            result.map(|_| ()).or_else(|e| self.check_error(e))?;
+                        }
+                    }
                     continue;
                 }
                 _ => {

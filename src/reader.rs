@@ -709,6 +709,157 @@ mod tests {
             .expect("Pentax ColorSpace");
         assert_eq!(colour.value.get_uint(0), Some(1));
     }
+
+    /// A TIFF with `Make` and `Model` in IFD0 and a MakerNote in the Exif IFD.
+    /// `note` is given the MakerNote's TIFF offset, so it can address its own
+    /// values the way a real one does.
+    #[cfg(feature = "make_note")]
+    fn tiff_with_maker_note(le: bool, make: &[u8], model: &[u8],
+                            note: impl Fn(u32) -> Vec<u8>) -> Vec<u8> {
+        let u16b = |v: u16| if le { v.to_le_bytes() } else { v.to_be_bytes() };
+        let u32b = |v: u32| if le { v.to_le_bytes() } else { v.to_be_bytes() };
+        let make_at = 50u32;
+        let model_at = make_at + make.len() as u32;
+        let exif_at = (model_at + model.len() as u32 + 1) & !1;
+        let note_at = exif_at + 18;
+        let note = note(note_at);
+
+        let mut t = if le { b"II\x2a\0".to_vec() } else { b"MM\0\x2a".to_vec() };
+        t.extend_from_slice(&u32b(8));
+        t.extend_from_slice(&u16b(3));
+        for (tag, typ, count, value) in [
+            (0x010f, 2, make.len() as u32, make_at),
+            (0x0110, 2, model.len() as u32, model_at),
+            (0x8769, 4, 1, exif_at),
+        ] {
+            t.extend_from_slice(&u16b(tag));
+            t.extend_from_slice(&u16b(typ));
+            t.extend_from_slice(&u32b(count));
+            t.extend_from_slice(&u32b(value));
+        }
+        t.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(t.len(), 50);
+        t.extend_from_slice(make);
+        t.extend_from_slice(model);
+        t.resize(exif_at as usize, 0);
+        t.extend_from_slice(&u16b(1));
+        t.extend_from_slice(&u16b(0x927c));
+        t.extend_from_slice(&u16b(7));
+        t.extend_from_slice(&u32b(note.len() as u32));
+        t.extend_from_slice(&u32b(note_at));
+        t.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(t.len(), note_at as usize);
+        t.extend_from_slice(&note);
+        t
+    }
+
+    /// **Canon `ColorInfo` is a table of positions**: element 3 is the colour
+    /// space. Each position is a `CanonColorInfo` field, starting at 1 as
+    /// exiftool's table does; the array stays a field of its own.
+    #[cfg(feature = "make_note")]
+    #[test]
+    fn canon_color_info_positions() {
+        use crate::make_note::maker_tag::{MakerNoteVendor, MakerTag};
+
+        // A bare little-endian IFD: 0x4003, four SHORTs out of line.
+        let t = tiff_with_maker_note(true, b"Canon\0", b"Canon EOS-1D Mark II\0", |at| {
+            let mut n = vec![1, 0];
+            n.extend_from_slice(&[0x03, 0x40, 3, 0, 4, 0, 0, 0]);
+            n.extend_from_slice(&(at + 18).to_le_bytes());
+            n.extend_from_slice(&[0, 0, 0, 0]);
+            for v in [8u16, 0, 0, 2] {
+                n.extend_from_slice(&v.to_le_bytes());
+            }
+            n
+        });
+        let exif = Reader::new().read_raw(t).unwrap();
+        let field = |v, n| exif.get_maker_note_field(&MakerTag::new(v, n));
+        assert!(field(MakerNoteVendor::Canon, 0x4003).is_some(), "the array itself is kept");
+        assert_eq!(field(MakerNoteVendor::CanonColorInfo, 3).and_then(|f| f.value.get_uint(0)),
+                   Some(2));
+        assert_eq!(field(MakerNoteVendor::CanonColorInfo, 1).and_then(|f| f.value.get_uint(0)),
+                   Some(0));
+        assert!(field(MakerNoteVendor::CanonColorInfo, 0).is_none(), "the table starts at 1");
+    }
+
+    /// **Minolta's camera-settings blocks are big-endian int16 tables**, and
+    /// 0x0114 is a different table per body: the Dynax 5D's layout for a 5D,
+    /// none for a body exiftool has no layout for.
+    #[cfg(feature = "make_note")]
+    #[test]
+    fn minolta_camera_settings_positions() {
+        use crate::make_note::maker_tag::{MakerNoteVendor, MakerTag};
+
+        // A bare big-endian IFD: 0x0004 (7D table, ColorSpace at 0x25 = 4) and
+        // 0x0114 (5D table, ColorSpace at 0x2F = 3), both as UNDEFINED bytes.
+        let note = |at: u32| {
+            let seven_d_at = at + 30;
+            let five_d_at = seven_d_at + 76;
+            let mut n = vec![0, 2];
+            n.extend_from_slice(&[0x00, 0x04, 0, 7, 0, 0, 0, 76]);
+            n.extend_from_slice(&seven_d_at.to_be_bytes());
+            n.extend_from_slice(&[0x01, 0x14, 0, 7, 0, 0, 0, 96]);
+            n.extend_from_slice(&five_d_at.to_be_bytes());
+            n.extend_from_slice(&[0, 0, 0, 0]);
+            let mut seven_d = vec![0u8; 76];
+            seven_d[0x25 * 2 + 1] = 4;
+            let mut five_d = vec![0u8; 96];
+            five_d[0x2f * 2 + 1] = 3;
+            n.extend_from_slice(&seven_d);
+            n.extend_from_slice(&five_d);
+            n
+        };
+        let field = |exif: &crate::Exif, v, n| exif
+            .get_maker_note_field(&MakerTag::new(v, n))
+            .and_then(|f| f.value.get_uint(0));
+
+        let exif = Reader::new()
+            .read_raw(tiff_with_maker_note(false, b"MINOLTA\0", b"DYNAX 5D\0", note)).unwrap();
+        assert_eq!(exif.maker_note_vendor().ok(), Some(MakerNoteVendor::Minolta));
+        assert_eq!(field(&exif, MakerNoteVendor::MinoltaCameraSettings7D, 0x25), Some(4),
+                   "big-endian, whatever the reader");
+        assert_eq!(field(&exif, MakerNoteVendor::MinoltaCameraSettings5D, 0x2f), Some(3));
+
+        let other = Reader::new()
+            .read_raw(tiff_with_maker_note(false, b"MINOLTA\0", b"DiMAGE A2\0", note)).unwrap();
+        assert_eq!(field(&other, MakerNoteVendor::MinoltaCameraSettings7D, 0x25), Some(4));
+        assert_eq!(field(&other, MakerNoteVendor::MinoltaCameraSettings5D, 0x2f), None,
+                   "0x0114 has a layout only for the bodies that write one");
+    }
+
+    /// **A Sony DSLR-A100's Minolta MakerNote is an IFD inside its Sony one**,
+    /// reached through Sony 0xB028 from the TIFF header; its 0x0114 is the
+    /// A100 table.
+    #[cfg(feature = "make_note")]
+    #[test]
+    fn sony_a100_nested_minolta_maker_note() {
+        use crate::make_note::maker_tag::{MakerNoteVendor, MakerTag};
+
+        let t = tiff_with_maker_note(true, b"SONY\0", b"DSLR-A100\0", |at| {
+            let nested_at = at + 12 + 18;
+            let mut n = b"SONY DSC \0\0\0".to_vec();
+            n.extend_from_slice(&[1, 0]);
+            n.extend_from_slice(&[0x28, 0xb0, 4, 0, 1, 0, 0, 0]);
+            n.extend_from_slice(&nested_at.to_le_bytes());
+            n.extend_from_slice(&[0, 0, 0, 0]);
+            // The nested Minolta IFD: 0x0114, 48 UNDEFINED bytes after it.
+            n.extend_from_slice(&[1, 0]);
+            n.extend_from_slice(&[0x14, 0x01, 7, 0, 48, 0, 0, 0]);
+            n.extend_from_slice(&(nested_at + 18).to_le_bytes());
+            n.extend_from_slice(&[0, 0, 0, 0]);
+            let mut table = vec![0u8; 48];
+            table[0x17 * 2 + 1] = 5;
+            n.extend_from_slice(&table);
+            n
+        });
+        let exif = Reader::new().read_raw(t).unwrap();
+        assert_eq!(exif.maker_note_vendor().ok(), Some(MakerNoteVendor::Sony));
+        let field = |v, n| exif.get_maker_note_field(&MakerTag::new(v, n));
+        assert!(field(MakerNoteVendor::Sony, 0xb028).is_some(), "the pointer is kept");
+        assert!(field(MakerNoteVendor::Minolta, 0x0114).is_some(), "the nested IFD is read");
+        assert_eq!(field(MakerNoteVendor::MinoltaCameraSettingsA100, 0x17)
+                       .and_then(|f| f.value.get_uint(0)), Some(5));
+    }
 }
 
 /// The RAF's raw image, as ordinary sub-image fields.
